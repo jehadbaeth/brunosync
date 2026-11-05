@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -374,8 +375,24 @@ func FromNode(n *yaml.Node) (any, error) {
 	return nil, fmt.Errorf("unsupported YAML node kind %v", n.Kind)
 }
 
+// YAML 1.2 core schema forms. yaml.v3 also accepts YAML 1.1 leftovers such
+// as "0_0001" (read as 1) or "1:20"; Bruno writes such strings unquoted and
+// reads them back as strings, so brunosync must do the same.
+var (
+	coreInt   = regexp.MustCompile(`^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$`)
+	coreFloat = regexp.MustCompile(`^(?:[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$`)
+	coreBool  = regexp.MustCompile(`^(?:true|True|TRUE|false|False|FALSE)$`)
+)
+
 // ScalarFromTag converts a scalar with a resolved YAML tag to a Go value.
+// Plain scalars only become numbers or booleans in their YAML 1.2 core form.
 func ScalarFromTag(tag, value string) any {
+	switch {
+	case tag == "!!int" && !coreInt.MatchString(value),
+		tag == "!!float" && !coreFloat.MatchString(value),
+		tag == "!!bool" && !coreBool.MatchString(value):
+		return value
+	}
 	switch tag {
 	case "!!null":
 		return nil
@@ -426,6 +443,8 @@ func ToNode(v any) *yaml.Node {
 		n := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: t}
 		if strings.Contains(t, "\n") {
 			n.Style = yaml.LiteralStyle
+		} else if yaml11Ambiguous(t) {
+			n.Style = yaml.DoubleQuotedStyle
 		}
 		return n
 	case bool:
@@ -440,6 +459,15 @@ func ToNode(v any) *yaml.Node {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: fmt.Sprint(t)}
 	}
 }
+
+// yaml11Like matches plain scalars that a YAML 1.1 parser, such as the
+// js-yaml used by Bruno, reads as something other than a string: numbers with
+// underscores ("0_0001" is the number 1 there), sexagesimal numbers ("1:20"),
+// old style booleans and nulls. yaml.v3 follows YAML 1.2 and would write
+// these unquoted, so Bruno would change the value on load.
+var yaml11Like = regexp.MustCompile(`^(?:[-+]?(?:0b[01_]+|0x[0-9a-fA-F_]+|0o?[0-7_]+|[0-9][0-9_]*(?::[0-5]?[0-9])*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?|\.[0-9_]+(?:[eE][-+]?[0-9]+)?|\.(?:inf|Inf|INF))|\.(?:nan|NaN|NAN)|(?i:y|n|yes|no|on|off|true|false|null)|~|)$`)
+
+func yaml11Ambiguous(s string) bool { return yaml11Like.MatchString(s) }
 
 // Marshal renders a Map as YAML with two space indentation, the way Bruno
 // writes its files. Top level blocks are separated by a blank line, which
@@ -485,4 +513,43 @@ func MustMarshalString(v any) string {
 	}
 	_ = enc.Close()
 	return strings.TrimSpace(buf.String())
+}
+
+// Diff returns the path of the first difference between two values (as
+// Equal sees them), or "" when they are equal.
+func Diff(a, b any, path string) string {
+	if Equal(a, b) {
+		return ""
+	}
+	am, aok := normalizeEmpty(a).(*Map)
+	bm, bok := normalizeEmpty(b).(*Map)
+	if aok && bok {
+		keys := append(am.Keys(), bm.Keys()...)
+		for _, k := range keys {
+			if d := Diff(am.Value(k), bm.Value(k), path+"."+k); d != "" {
+				return d
+			}
+		}
+	}
+	al, alok := normalizeEmpty(a).([]any)
+	bl, blok := normalizeEmpty(b).([]any)
+	if alok && blok && len(al) == len(bl) {
+		for i := range al {
+			if d := Diff(al[i], bl[i], fmt.Sprintf("%s[%d]", path, i)); d != "" {
+				return d
+			}
+		}
+	}
+	return fmt.Sprintf("%s: %s != %s", path, short(a), short(b))
+}
+
+func short(v any) string {
+	s := fmt.Sprintf("%#v", v)
+	if m, ok := v.(*Map); ok {
+		s = MustMarshalString(m)
+	}
+	if len(s) > 60 {
+		s = s[:57] + "..."
+	}
+	return s
 }
