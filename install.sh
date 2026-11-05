@@ -6,6 +6,7 @@
 # Environment:
 #   BRUNOSYNC_VERSION      tag to install, e.g. v0.1.0 (default: latest release)
 #   BRUNOSYNC_INSTALL_DIR  target directory (default: $HOME/.local/bin)
+#   BRUNOSYNC_DOWNLOAD_BASE  download from this URL instead of GitHub (mirrors, tests)
 set -eu
 
 repo="jehadbaeth/brunosync"
@@ -25,7 +26,9 @@ case "$arch" in
 esac
 
 asset="brunosync-$os-$arch"
-if [ "$version" = latest ]; then
+if [ -n "${BRUNOSYNC_DOWNLOAD_BASE:-}" ]; then
+	base="$BRUNOSYNC_DOWNLOAD_BASE" # mirrors and testing
+elif [ "$version" = latest ]; then
 	base="https://github.com/$repo/releases/latest/download"
 else
 	base="https://github.com/$repo/releases/download/$version"

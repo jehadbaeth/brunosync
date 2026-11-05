@@ -84,3 +84,30 @@ jobs:
           "$b" sync
           test -f collection/orders-service/orders/createOrder.yml
           "$b" sync --exit-code -q   # second run must change nothing (exit 0)
+
+  install-script:
+    # Serves the built binaries locally and runs install.sh against them,
+    # including a tampered checksum that must be rejected.
+    needs: build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: brunosync-binaries
+          path: dist
+      - name: install from a local mirror
+        run: |
+          (cd dist && python3 -m http.server 8765 >/dev/null 2>&1 &)
+          for i in 1 2 3 4 5 6 7 8 9 10; do curl -fs -o /dev/null http://127.0.0.1:8765/SHA256SUMS && break; sleep 1; done
+          BRUNOSYNC_DOWNLOAD_BASE=http://127.0.0.1:8765 BRUNOSYNC_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          "$RUNNER_TEMP/bin/brunosync" version
+      - name: reject a bad checksum
+        run: |
+          sed -i.bak 's/^[0-9a-f]\{8\}/deadbeef/' dist/SHA256SUMS
+          if BRUNOSYNC_DOWNLOAD_BASE=http://127.0.0.1:8765 BRUNOSYNC_INSTALL_DIR="$RUNNER_TEMP/bad" sh install.sh; then
+            echo "install.sh accepted a tampered checksum"; exit 1
+          fi
