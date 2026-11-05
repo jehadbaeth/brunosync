@@ -156,9 +156,17 @@ func Discover(r config.Repo, dir string) ([]SpecFile, error) {
 			found[m] = true
 		}
 	}
+	// A pattern without wildcards names one file on purpose; the default
+	// excludes (dist, build, ...) must not hide it.
+	literal := map[string]bool{}
+	for _, p := range r.Specs {
+		if !strings.ContainsAny(p, "*?[{") {
+			literal[p] = true
+		}
+	}
 	var out []SpecFile
 	for rel := range found {
-		if excluded(rel, r.Exclude) {
+		if !literal[rel] && excluded(rel, r.Exclude) {
 			continue
 		}
 		out = append(out, SpecFile{
