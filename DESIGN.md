@@ -97,7 +97,7 @@ From the first `servers` entry: `<service>_protocol`, `<service>_host`, `<servic
 ## 5. Roadmap
 
 1. **Setup wizard** (`brunosync init --interactive`): pick repos, review discovered services and names, define environments and generate Bruno environment files with per service host and port.
-2. **CI mode**, if the team chooses it: a pipeline in a collection repo that runs `brunosync sync --exit-code --report report.md` and opens a merge request with the report as description. Nothing in the tool blocks this. It needs a project token and a small job definition.
+2. **Merge request mode** for `git` output: push to a branch and open a merge/pull request with the report instead of pushing to the branch directly. `zip` and `git` outputs exist since v0.2 (see README).
 3. **GitLab artifact source**, if CI bundling is wanted: `source: gitlab-artifact` reading pre bundled specs instead of cloning.
 4. **`brunosync status`**: list requests whose owned fields diverge from the spec on purpose (resolved conflicts), so divergence stays visible after the one time report.
 5. **Adoption** of an existing hand imported collection, by matching files on method and URL path.

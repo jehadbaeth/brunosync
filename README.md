@@ -6,7 +6,7 @@ It replaces Bruno's built in OpenAPI Sync, which links one collection to one spe
 
 * One static binary per platform. No Node, no Java, no build step for users.
 * Specs that reference a shared `common` spec through relative `$ref`s work out of the box.
-* Runs locally today. The same binary can run in CI later (see DESIGN.md, roadmap).
+* Runs locally or in CI: write a folder, a zip artifact, or commit to a collection repo.
 
 ## Install
 
@@ -104,6 +104,50 @@ When an endpoint disappears from its spec:
 
 Set `sync.removed` to `delete` or `keep` to change that. If a spec fails to load (for example a broken `$ref`), its requests are left completely alone. A broken spec never wipes its requests.
 
+## Where the collection goes
+
+The same binary works locally and in CI. Choose with `output.type` in the config, or per run with flags.
+
+| Output | Use it for | What happens |
+|---|---|---|
+| `dir` (default) | local use | syncs into `collection.path` |
+| `zip` | a CI artifact people download | syncs into `collection.path`, then writes a zip with one top folder people unzip and open in Bruno |
+| `git` | a shared collection repo | clones the collection repo, syncs inside it (merging with what teammates committed there), commits with the report as the message body, pushes |
+
+```sh
+brunosync sync                               # dir
+brunosync sync --zip dist/apis.zip           # zip, path from the flag
+brunosync sync --output git                  # git, settings from the config
+```
+
+```yaml
+output:
+  type: git
+  git:
+    url: git@github.com:your-org/api-collection.git
+    branch: main            # created if it does not exist
+    path: collection        # folder inside that repo, default "."
+    message: Update API collection (brunosync)
+    push: true              # false: commit only, useful for a dry rehearsal
+```
+
+Notes:
+
+* The zip is reproducible: the same collection always gives a byte identical file. It includes `.brunosync/`, so a downloaded collection can be synced further locally.
+* In `git` mode the remote is the source of truth. The cached clone is reset to the remote branch before every run, so tests people committed to the collection repo are merged, never overwritten. If someone pushes while a sync runs, the push fails cleanly and the next run picks it up.
+* Credentials are whatever `git` already uses (SSH agent, credential helper, or a token in the URL in CI). The commit author is `authorName`/`authorEmail` from the config, else your git identity, else `brunosync`.
+* With `--dry-run` nothing is zipped, committed or pushed.
+* If some specs fail to load, the others are still published (the failing ones keep their previous requests) and the exit code is 1.
+
+### In GitHub Actions, for example
+
+```yaml
+- run: curl -fsSL https://raw.githubusercontent.com/jehadbaeth/brunosync/main/install.sh | sh
+- run: ~/.local/bin/brunosync sync --zip apis.zip --report report.md
+- uses: actions/upload-artifact@v4
+  with: { name: bruno-collection, path: apis.zip }
+```
+
 ## Commands
 
 ```
@@ -123,6 +167,8 @@ Flags for `sync`:
 | `--offline` | use cached git clones, don't fetch |
 | `--exit-code` | exit 10 when files changed, 20 on conflicts (for scripts and CI) |
 | `-q` | only print the summary |
+| `--output dir\|zip\|git` | override `output.type` |
+| `--zip file.zip` | write a zip (implies `--output zip`) |
 
 Exit code 1 means an error. Specs that loaded fine are still synced, and the failing ones are listed.
 
