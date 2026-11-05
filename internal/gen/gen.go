@@ -95,16 +95,21 @@ func Service(svc *spec.Service, dir string) Output {
 	}
 
 	out.Folders = append(out.Folders, Folder{Dir: dir, Doc: folderDoc(svc.Folder, serviceDocs(svc))})
-	seenTagDirs := map[string]bool{}
+	seenTagDirs := map[string]string{}
 	usedNames := map[string]bool{}
 
 	for _, op := range svc.Operations {
 		reqDir := dir
 		if len(op.Tags) > 0 && strings.TrimSpace(op.Tags[0]) != "" {
 			tag := op.Tags[0]
-			reqDir = dir + "/" + FileSafe(tag)
-			if !seenTagDirs[reqDir] {
-				seenTagDirs[reqDir] = true
+			// Tags that differ only in case ("Webhooks", "webhooks") share a
+			// folder: on macOS and Windows they would be the same directory.
+			key := strings.ToLower(FileSafe(tag))
+			if existing, ok := seenTagDirs[key]; ok {
+				reqDir = existing
+			} else {
+				reqDir = dir + "/" + FileSafe(tag)
+				seenTagDirs[key] = reqDir
 				out.Folders = append(out.Folders, Folder{Dir: reqDir, Doc: folderDoc(tag, tagDocs[tag])})
 			}
 		}

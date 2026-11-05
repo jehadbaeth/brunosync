@@ -388,3 +388,36 @@ func containsSub(list []string, sub string) bool {
 	}
 	return false
 }
+
+// Found in the real world suite (cloudflare, openai): tags differing only in
+// case and query strings inside path keys must still give a stable second sync.
+func TestCaseOnlyTagsAndEmbeddedQueryAreStable(t *testing.T) {
+	cfg, repo := fixture(t)
+	writeFile(t, filepath.Join(repo, "hooks", "openapi.yml"), `openapi: 3.0.3
+info: {title: Hooks, version: "1"}
+servers: [{url: "http://localhost:9000"}]
+paths:
+  /webhooks:
+    get: {operationId: listHooks, tags: [Webhooks], responses: {'200': {description: ok}}}
+  /webhooks/{id}:
+    delete:
+      operationId: deleteHook
+      tags: [webhooks]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {'204': {description: gone}}
+  /responses?beta=true:
+    post: {operationId: betaCreate, tags: [webhooks], responses: {'200': {description: ok}}}
+`)
+	mustSync(t, cfg)
+	coll := cfg.CollectionDir()
+	if !source.Exists(filepath.Join(coll, "hooks", "Webhooks", "deleteHook.yml")) {
+		t.Error("case variants of a tag should share the first spelling's folder")
+	}
+	beta := load(t, filepath.Join(coll, "hooks", "Webhooks", "betaCreate.yml"))
+	if got := beta.Path("http.url"); got != "{{hooks_baseUrl}}/responses?beta=true" {
+		t.Errorf("url = %v", got)
+	}
+	if rep := mustSync(t, cfg); rep.HasChanges() {
+		t.Fatalf("second sync changed files: %+v", rep.Changes)
+	}
+}
