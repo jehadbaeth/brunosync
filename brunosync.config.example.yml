@@ -1,0 +1,42 @@
+# brunosync configuration reference. Copy to brunosync.yml and adjust.
+# Relative paths resolve against the directory of this file.
+version: 1
+
+collection:
+  path: ./collection          # Bruno collection folder (OpenCollection YAML), created on first sync
+  name: Platform APIs         # only used when the collection is created
+
+sync:
+  removed: archive            # what happens to requests whose endpoint left the spec:
+                              #   archive  move to _removed/ if it has tests, scripts or edits, else delete (default)
+                              #   delete   always delete
+                              #   keep     leave the file, stop managing it
+  requireOperationIds: false  # true: a missing operationId fails that spec instead of a warning
+
+repos:
+  # A local checkout. Every openapi.yml / openapi.yaml below it is found
+  # automatically. Specs without paths (shared "common" modules) are skipped,
+  # their schemas still arrive through the $refs of the other specs.
+  - path: ../backend
+
+  # A remote repo, cloned into ~/Library/Caches/brunosync (macOS) or
+  # ~/.cache/brunosync (Linux) with your normal git credentials.
+  - git: git@gitlab.example.com:platform/flight-dynamics.git
+    ref: main                 # branch or tag, default is the remote's default branch
+    name: flight-dynamics     # optional, defaults to the last part of the path or URL
+
+    specs:                    # optional, these are the defaults
+      - "**/openapi.yml"
+      - "**/openapi.yaml"
+    exclude:                  # optional, added to the defaults
+      - "**/legacy/**"        # defaults: node_modules, build, target, dist, .git
+
+    # Per spec tweaks, keyed by the spec path relative to the repo root.
+    # The service name is derived from the path (nearest directory that is not
+    # src, main, resources, api, ...), override it when that guess is wrong.
+    overrides:
+      orbit-propagation/src/main/resources/openapi.yml:
+        name: propagation     # identity and variable prefix (propagation_host, ...)
+        folder: Propagation   # folder name shown in Bruno, default is info.title
+      tools/openapi.yml:
+        skip: true
