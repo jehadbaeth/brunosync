@@ -1,0 +1,9 @@
+{
+  "name": "brunosync-bruno-compat",
+  "private": true,
+  "description": "Checks brunosync output against Bruno's own file parser and CLI. Bump the versions here when the team updates Bruno.",
+  "dependencies": {
+    "@usebruno/cli": "4.3.0",
+    "js-yaml": "4.1.0"
+  }
+}
