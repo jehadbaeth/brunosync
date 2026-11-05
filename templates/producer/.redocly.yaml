@@ -1,0 +1,8 @@
+# Lint config for service repos. Copy to the repo root.
+# operationIds are what brunosync uses to recognise a request across syncs (DESIGN.md 4.1).
+extends:
+  - minimal
+rules:
+  operation-operationId: error
+  operation-operationId-unique: error
+  no-unresolved-refs: error

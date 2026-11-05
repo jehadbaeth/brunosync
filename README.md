@@ -1,0 +1,175 @@
+# brunosync
+
+brunosync keeps one Bruno collection in sync with the OpenAPI specs of many repositories. Each spec becomes its own folder in the collection, request bodies get generated examples, and anything people add by hand (tests, scripts, assertions, filled in values, their own requests) survives every sync.
+
+It replaces Bruno's built in OpenAPI Sync, which links one collection to one spec, has no CLI and loses everything behind a cross file `$ref`.
+
+* One static binary per platform. No Node, no Java, no build step for users.
+* Specs that reference a shared `common` spec through relative `$ref`s work out of the box.
+* Runs locally today. The same binary can run in CI later (see DESIGN.md, roadmap).
+
+## Install
+
+Download the binary for your platform from the project's GitLab Releases page and put it on your `PATH`.
+
+| Platform | File |
+|---|---|
+| macOS Apple Silicon | `brunosync-darwin-arm64` |
+| macOS Intel | `brunosync-darwin-amd64` |
+| Linux | `brunosync-linux-amd64` / `brunosync-linux-arm64` |
+| Windows | `brunosync-windows-amd64.exe` |
+
+The project is private, so a download needs GitLab credentials. Through the browser that just means being logged in. With curl, use a personal access token with `read_api` scope:
+
+```sh
+curl --fail -L -o ~/.local/bin/brunosync \
+  --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  "https://gitlab.example.com/api/v4/projects/<project id>/packages/generic/brunosync/<version>/brunosync-darwin-arm64"
+chmod +x ~/.local/bin/brunosync
+brunosync version
+```
+
+**macOS:** the binary is not signed by Apple. If you download it through a browser, Gatekeeper blocks it ("cannot be opened because the developer cannot be verified"). Either download with curl as above (curl does not set the quarantine flag) or clear it once:
+
+```sh
+xattr -d com.apple.quarantine ~/.local/bin/brunosync
+```
+
+`git` is only needed if you use `git:` sources in the config.
+
+## Quick start
+
+```sh
+mkdir api-collection && cd api-collection
+brunosync init            # writes brunosync.yml
+# edit brunosync.yml: point repos at your checkouts or git URLs
+brunosync validate        # loads every spec, shows services and warnings, writes nothing
+brunosync sync            # creates ./collection
+```
+
+Then open the `collection` folder in Bruno (v3 or newer, which reads the OpenCollection YAML format). Run `brunosync sync` again whenever the specs change. `brunosync sync --dry-run` shows what would change first.
+
+## Config
+
+`brunosync init` writes a commented starter. The full reference is [`brunosync.config.example.yml`](brunosync.config.example.yml). A minimal one:
+
+```yaml
+version: 1
+collection:
+  path: ./collection
+  name: Platform APIs
+repos:
+  - path: ../backend
+  - git: git@gitlab.example.com:platform/flight-dynamics.git
+    ref: main
+```
+
+Every `openapi.yml` / `openapi.yaml` in a repo is picked up. Specs without any paths (your `common` modules) are skipped on their own, and their schemas still arrive through the `$ref`s of the specs that use them. The service name comes from the folder (`orders-service/src/main/resources/openapi.yml` becomes `orders-service`). Use `overrides` in the config when that guess is wrong.
+
+## What you get
+
+```
+collection/
+  opencollection.yml            collection variables per service live here
+  orders-service/               one folder per spec, named after info.title in Bruno
+    orders/                     one subfolder per OpenAPI tag
+      createOrder.yml           file name = operationId
+  billing/
+  _removed/                     requests whose endpoint disappeared but had your work on them
+  .brunosync/                   brunosync's state, keep it next to the collection
+```
+
+### Base URLs, hosts and ports
+
+Each service gets collection variables built from its spec's first `servers` entry, and the URL is always split into protocol, host and port, even when the spec hard codes `http://`:
+
+```
+orders_service_protocol = http
+orders_service_host     = localhost
+orders_service_port     = 8081
+orders_service_baseUrl  = {{orders_service_protocol}}://{{orders_service_host}}:{{orders_service_port}}/orders
+```
+
+Requests use `{{orders_service_baseUrl}}/orders/:orderId`. To point at another machine, **create a Bruno environment and set `orders_service_host` (or port, protocol) there.** Environment variables beat collection variables in Bruno, and brunosync never touches environments. If you edit the collection variable itself instead, brunosync keeps your value, but you'll get a conflict when the spec changes it.
+
+### Example bodies
+
+JSON bodies come from, in order: the media type `example`/`examples`, the schema's `example`, `default`, `const` or first `enum` value, and otherwise a placeholder by type and format (`"2024-01-01T00:00:00Z"` for date-time, `0` for numbers, and so on). `allOf` is merged, `oneOf`/`anyOf` use the first option, `readOnly` fields are left out of requests and `writeOnly` fields out of responses, and recursive schemas stop after one level. Form and multipart bodies get one field per property. Every documented response becomes a Bruno example. The output is deterministic, so a sync without spec changes changes nothing.
+
+Path and query parameters only get a value when the spec gives an example. An empty `:orderId` is easier to notice than a fake one. Optional query params are added but disabled.
+
+## What a sync keeps
+
+brunosync remembers what it generated last time (`.brunosync/base/`) and does a three way merge for every request:
+
+* **Spec changed, you didn't touch the field:** the spec wins.
+* **You changed the field, the spec didn't:** your value stays.
+* **Both changed:** your value stays and it's reported as a conflict.
+
+Never touched at all: tests, scripts, assertions, request variables, settings, the order of requests, examples you saved yourself, folder settings, and requests you created by hand. Requests you moved to another folder are followed. A generated request you deleted comes back on the next sync.
+
+Parameters and headers merge by name, so a value you filled in survives while a new parameter from the spec is still added. Toggling a query param in Bruno is not treated as a URL edit.
+
+### Conflicts
+
+A conflict is printed once, at the sync where it happens. After that your value just stays, and that field stops following the spec for that request. Every run that changes something also writes its report to `collection/.brunosync/last-report.md`, so you can read it again later.
+
+To take the spec's version after all, fix the field by hand. Deleting the request file also works (the next sync regenerates it), but that throws away its tests and scripts too.
+
+### Removed endpoints
+
+When an endpoint disappears from its spec:
+
+* if the request has your work on it (tests, scripts, edits), it moves to `_removed/<service>/` so nothing is lost,
+* otherwise it's deleted.
+
+Set `sync.removed` to `delete` or `keep` to change that. If a spec fails to load (for example a broken `$ref`), its requests are left completely alone. A broken spec never wipes its requests.
+
+## Commands
+
+```
+brunosync init       write a starter brunosync.yml
+brunosync validate   load every spec and report problems, writes nothing
+brunosync sync       generate and merge into the collection
+brunosync version
+```
+
+Flags for `sync`:
+
+| Flag | |
+|---|---|
+| `-c, --config` | config file, default `brunosync.yml` |
+| `--dry-run` | show what would change, write nothing |
+| `--report file.md` | also write the report as Markdown |
+| `--offline` | use cached git clones, don't fetch |
+| `--exit-code` | exit 10 when files changed, 20 on conflicts (for scripts and CI) |
+| `-q` | only print the summary |
+
+Exit code 1 means an error. Specs that loaded fine are still synced, and the failing ones are listed.
+
+## Known limitations
+
+* OpenAPI 3.0 and 3.1 only. Swagger 2.0 is rejected with a clear error.
+* `$ref`s to other files are followed, `$ref`s to URLs are not.
+* Only the first `servers` entry is used, and operation level `servers` are ignored (with a warning).
+* Request auth is always `inherit`. Set auth once on the collection or a folder in Bruno.
+* If a request file already exists at a path brunosync wants to create and brunosync doesn't manage it, brunosync leaves it alone and reports it. Adopting an existing hand imported collection isn't supported yet, so start from a fresh folder.
+* Renaming a generated service or tag folder in Bruno makes the next sync create the folder again for new requests. Existing requests are followed.
+* Operations without an `operationId` work, but they're identified by method and path, so renaming the path loses that request's tests. brunosync warns for each one. `sync.requireOperationIds: true` makes it an error.
+* Environments are not generated yet. That comes with the setup wizard.
+* Verified against Bruno's file library and CLI 4.3.0 (see below), not by clicking through the desktop app.
+
+## Development
+
+```sh
+make build              # bin/brunosync
+make test               # go vet + tests with the race detector
+test/bruno-compat/run.sh   # checks output against Bruno itself (needs Node)
+make dist               # binaries for all platforms in dist/
+```
+
+`test/bruno-compat/run.sh` syncs the sample fixture, round trips every file through Bruno's own parser and serializer (what the app does on save), does the same for a collection that went through a merge with user edits, then sends every request with the Bruno CLI to a local echo server and checks headers, query strings and bodies. Run it after changing the generator, and when the team updates Bruno (bump the versions in `test/bruno-compat/package.json` first).
+
+Releases: push a tag like `v0.1.0`. `.gitlab-ci.yml` tests, builds every platform, uploads to the package registry and creates a GitLab release with download links. Every push to the default branch also publishes binaries as package version `main`.
+
+The design and the reasons behind it are in [DESIGN.md](DESIGN.md).
