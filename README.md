@@ -173,6 +173,20 @@ Flags for `sync`:
 
 Exit code 1 means an error. Specs that loaded fine are still synced, and the failing ones are listed.
 
+## Tested against real APIs
+
+`test/realworld/` syncs 28 collections from 27 public repositories (GitHub, Stripe, Cloudflare, OpenAI, Twilio, Adyen, DigitalOcean, Elasticsearch and more, several thousand operations in total) and checks for every one:
+
+* every spec loads, or fails with a known upstream reason
+* the number of generated requests equals the operations counted independently from the spec
+* every file saved through Bruno's own parser and serializer is unchanged for brunosync
+* every JSON body and JSON example is valid JSON
+* every `{{variable}}` in URLs and headers exists
+* a second sync changes nothing
+* `bru run` sends every single request to a local echo server
+
+Latest results: [test/realworld/RESULTS.md](test/realworld/RESULTS.md). It runs weekly in GitHub Actions and locally with `test/realworld/run.sh`.
+
 ## Known limitations
 
 * OpenAPI 3.0 and 3.1 only. Swagger 2.0 is rejected with a clear error.
@@ -191,6 +205,7 @@ Exit code 1 means an error. Specs that loaded fine are still synced, and the fai
 make build              # bin/brunosync
 make test               # go vet + tests with the race detector
 test/bruno-compat/run.sh   # checks output against Bruno itself (needs Node)
+test/realworld/run.sh      # the real world suite (needs Node, downloads specs)
 make dist               # binaries for all platforms in dist/
 ```
 
