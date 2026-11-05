@@ -214,3 +214,27 @@ func copyTree(t *testing.T, from, to string) {
 		t.Fatal(err)
 	}
 }
+
+func TestDebugCompareDetectsTypeAndValueChanges(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	write := func(dir, s string) {
+		if err := os.WriteFile(filepath.Join(dir, "r.yml"), []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(a, "http:\n  params:\n    - name: n\n      value: \"10\"\n")
+	write(b, "http:\n  params:\n    - name: n\n      value: \"10\"\n")
+	if code, out := runCLI(t, "debug", "compare", a, b); code != 0 {
+		t.Fatalf("identical files reported different: %s", out)
+	}
+	write(b, "http:\n  params:\n    - name: n\n      value: 10\n") // string became a number
+	code, out := runCLI(t, "debug", "compare", a, b)
+	if code == 0 || !strings.Contains(out, "http.params[0].value") {
+		t.Fatalf("type change not detected (exit %d): %s", code, out)
+	}
+	write(b, "http:\n  params:\n    - name: n\n      value: 0_0001\n")
+	write(a, "http:\n  params:\n    - name: n\n      value: \"0_0001\"\n")
+	if code, out := runCLI(t, "debug", "compare", a, b); code != 0 {
+		t.Fatalf("Bruno's unquoted 0_0001 must equal the quoted string: %s", out)
+	}
+}

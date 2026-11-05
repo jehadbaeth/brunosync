@@ -35,11 +35,13 @@ EOF
 "$work/brunosync" sync -c "$work/brunosync.yml" -q
 
 echo "== round trip: fresh collection"
-node "$here/roundtrip.js" "$work/collection"
+node "$here/roundtrip.js" "$work/collection" "$work/collection-saved"
+"$work/brunosync" debug compare "$work/collection" "$work/collection-saved"
 
 echo "== round trip: collection after a merge with user edits"
 (cd "$root" && BRUNOSYNC_KEEP_COLLECTION="$work/merged" go test ./internal/syncer -run TestMergeScenario -count=1 >/dev/null)
-node "$here/roundtrip.js" "$work/merged"
+node "$here/roundtrip.js" "$work/merged" "$work/merged-saved"
+"$work/brunosync" debug compare "$work/merged" "$work/merged-saved"
 
 echo "== bru run against an echo server"
 node "$here/echo.js" "$work/echo.log" &

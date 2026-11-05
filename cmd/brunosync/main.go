@@ -59,6 +59,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdValidate(args[1:], stdout, stderr)
 	case "init":
 		return cmdInit(args[1:], stdout, stderr)
+	case "debug":
+		return cmdDebug(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "brunosync %s\n", version)
 		return exitOK
