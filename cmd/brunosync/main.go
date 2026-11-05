@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/jehadbaeth/brunosync/internal/config"
+	"github.com/jehadbaeth/brunosync/internal/output"
 	"github.com/jehadbaeth/brunosync/internal/source"
 	"github.com/jehadbaeth/brunosync/internal/syncer"
 )
@@ -85,6 +86,8 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 	offline := fs.Bool("offline", false, "do not fetch git repos, use the cached clones")
 	exitCode := fs.Bool("exit-code", false, "exit with 10 when files changed and 20 when there are conflicts")
 	quiet := fs.Bool("q", false, "only print the summary")
+	outType := fs.String("output", "", "where the result goes: dir, zip or git (overrides output.type)")
+	zipPath := fs.String("zip", "", "write the collection to this zip file (implies --output zip)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -93,11 +96,34 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return exitError
 	}
+	if *zipPath != "" {
+		cfg.Output.Type = config.OutputZip
+		cfg.Output.Zip.Path = *zipPath
+	}
+	if *outType != "" {
+		cfg.Output.Type = *outType
+	}
+	cfg.ApplyOutputDefaults()
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return exitError
+	}
 	logf := func(format string, a ...any) {
 		if !*quiet {
 			fmt.Fprintf(stderr, "  "+format+"\n", a...)
 		}
 	}
+
+	var gitTarget *output.GitTarget
+	if cfg.Output.Type == config.OutputGit {
+		gitTarget, err = output.PrepareGit(cfg.Output.Git, output.GitOptions{Log: logf})
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return exitError
+		}
+		cfg.Collection.Path = gitTarget.Coll
+	}
+
 	rep, runErr := syncer.Run(cfg, syncer.Options{
 		DryRun: *dryRun,
 		Source: source.Options{Offline: *offline},
@@ -119,6 +145,37 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", runErr)
 		return exitError
 	}
+
+	// Publish even when some specs failed: their requests were left untouched,
+	// the others are up to date. The exit code still reports the failure.
+	if !*dryRun {
+		switch cfg.Output.Type {
+		case config.OutputZip:
+			zp := cfg.Abs(cfg.Output.Zip.Path)
+			n, err := output.Zip(cfg.CollectionDir(), zp, cfg.Collection.Name)
+			if err != nil {
+				fmt.Fprintln(stderr, "error: writing zip:", err)
+				return exitError
+			}
+			fmt.Fprintf(stdout, "wrote %s (%d files)\n", zp, n)
+		case config.OutputGit:
+			var body strings.Builder
+			rep.WriteMarkdown(&body)
+			sha, err := gitTarget.Publish(body.String())
+			if err != nil {
+				fmt.Fprintln(stderr, "error:", err)
+				return exitError
+			}
+			if sha != "" {
+				pushed := "committed"
+				if cfg.Output.Git.ShouldPush() {
+					pushed = "committed and pushed"
+				}
+				fmt.Fprintf(stdout, "%s %s to %s\n", pushed, sha, cfg.Output.Git.URL)
+			}
+		}
+	}
+
 	if len(rep.Errors) > 0 {
 		return exitError
 	}

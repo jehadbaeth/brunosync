@@ -33,6 +33,7 @@ type Config struct {
 	Version    int        `yaml:"version"`
 	Collection Collection `yaml:"collection"`
 	Sync       Sync       `yaml:"sync"`
+	Output     Output     `yaml:"output"`
 	Repos      []Repo     `yaml:"repos"`
 
 	// Dir is the directory of the config file. Relative paths resolve against it.
@@ -50,6 +51,39 @@ type Sync struct {
 	Removed             string `yaml:"removed"`
 	RequireOperationIDs bool   `yaml:"requireOperationIds"`
 }
+
+// Output types: where the synced collection ends up.
+const (
+	OutputDir = "dir" // write to collection.path (default, local use)
+	OutputZip = "zip" // sync into collection.path, then zip it (CI artifact)
+	OutputGit = "git" // sync inside a clone of a collection repo, commit, push
+)
+
+// Output selects where the collection is published.
+type Output struct {
+	Type string    `yaml:"type"`
+	Zip  ZipOutput `yaml:"zip"`
+	Git  GitOutput `yaml:"git"`
+}
+
+// ZipOutput writes the collection as a zip file.
+type ZipOutput struct {
+	Path string `yaml:"path"` // default ./<collection name>.zip
+}
+
+// GitOutput syncs into a git repository that holds the collection.
+type GitOutput struct {
+	URL         string `yaml:"url"`
+	Branch      string `yaml:"branch"`  // default: the remote's default branch
+	Path        string `yaml:"path"`    // collection folder inside the repo, default "."
+	Message     string `yaml:"message"` // commit subject
+	Push        *bool  `yaml:"push"`    // default true
+	AuthorName  string `yaml:"authorName"`
+	AuthorEmail string `yaml:"authorEmail"`
+}
+
+// ShouldPush reports whether git output pushes after committing.
+func (g GitOutput) ShouldPush() bool { return g.Push == nil || *g.Push }
 
 // Repo is one source repository holding one or more specs.
 type Repo struct {
@@ -112,6 +146,7 @@ func (c *Config) applyDefaults() {
 	if c.Sync.Removed == "" {
 		c.Sync.Removed = RemovedArchive
 	}
+	c.ApplyOutputDefaults()
 	for i := range c.Repos {
 		r := &c.Repos[i]
 		if len(r.Specs) == 0 {
@@ -134,6 +169,18 @@ func (c *Config) Validate() error {
 	case RemovedArchive, RemovedDelete, RemovedKeep:
 	default:
 		errs = append(errs, fmt.Sprintf("sync.removed must be archive, delete or keep, got %q", c.Sync.Removed))
+	}
+	switch c.Output.Type {
+	case OutputDir, OutputZip:
+	case OutputGit:
+		if c.Output.Git.URL == "" {
+			errs = append(errs, "output.git.url is required for output type git")
+		}
+		if strings.HasPrefix(c.Output.Git.Path, "/") || strings.Contains(c.Output.Git.Path, "..") {
+			errs = append(errs, "output.git.path must be a relative path inside the repo")
+		}
+	default:
+		errs = append(errs, fmt.Sprintf("output.type must be dir, zip or git, got %q", c.Output.Type))
 	}
 	if len(c.Repos) == 0 {
 		errs = append(errs, "no repos configured")
@@ -162,6 +209,33 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+// ApplyOutputDefaults fills output defaults. Call it again after changing
+// the output type from the command line.
+func (c *Config) ApplyOutputDefaults() {
+	if c.Output.Type == "" {
+		c.Output.Type = OutputDir
+	}
+	if c.Output.Zip.Path == "" {
+		c.Output.Zip.Path = "./" + slugName(c.Collection.Name) + ".zip"
+	}
+	if c.Output.Git.Path == "" {
+		c.Output.Git.Path = "."
+	}
+	if c.Output.Git.Message == "" {
+		c.Output.Git.Message = "Update API collection (brunosync)"
+	}
+}
+
+func slugName(s string) string {
+	s = strings.Trim(slugRe.ReplaceAllString(s, "-"), "-")
+	if s == "" {
+		return "collection"
+	}
+	return strings.ToLower(s)
+}
+
+var slugRe = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
 // CollectionDir is the absolute collection directory.
 func (c *Config) CollectionDir() string { return c.Abs(c.Collection.Path) }
@@ -218,4 +292,13 @@ repos:
   # A remote repo, cloned with your normal git credentials:
   # - git: git@gitlab.example.com:platform/flight-dynamics.git
   #   ref: main
+
+# Where the result goes. Default is the folder above (collection.path).
+# output:
+#   type: zip                    # dir | zip | git
+#   zip: { path: ./apis.zip }    # CI artifact people download and open in Bruno
+#   git:                         # sync inside a collection repo, commit and push
+#     url: git@gitlab.example.com:platform/api-collection.git
+#     branch: main
+#     path: collection
 `
