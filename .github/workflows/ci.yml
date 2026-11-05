@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; exit 1; }
+      - name: vet and test
+        run: make test
+
+  bruno-compat:
+    # Checks generated and merged files against Bruno's own parser and CLI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: test/bruno-compat/run.sh
+
+  build:
+    # Cross compiles every release target so a broken platform shows up before tagging.
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make dist VERSION="main-${GITHUB_SHA::7}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brunosync-binaries
+          path: dist/
+          retention-days: 14
+
+  smoke:
+    # Runs the freshly built binary on every OS against the sample fixture.
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bin: brunosync-linux-amd64
+          - os: macos-latest
+            bin: brunosync-darwin-arm64
+          - os: windows-latest
+            bin: brunosync-windows-amd64.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: brunosync-binaries
+          path: dist
+      - name: sync the sample fixture twice
+        run: |
+          chmod +x "dist/${{ matrix.bin }}"
+          b="$PWD/dist/${{ matrix.bin }}"
+          mkdir smoke && cd smoke
+          printf 'version: 1\ncollection:\n  path: ./collection\n  name: Smoke\nrepos:\n  - path: ../test/fixtures/sample-repo\n' > brunosync.yml
+          "$b" version
+          "$b" validate
+          "$b" sync
+          test -f collection/orders-service/orders/createOrder.yml
+          "$b" sync --exit-code -q   # second run must change nothing (exit 0)
