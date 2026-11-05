@@ -16,6 +16,10 @@ func TestServiceName(t *testing.T) {
 		"api/openapi.yaml":                              "myrepo",
 		"openapi.yml":                                   "myrepo",
 		"Flight Dynamics/openapi.yml":                   "Flight-Dynamics",
+		"specs/xero-finance.yaml":                       "xero-finance",
+		"spec/yaml/twilio_api_v2010.yaml":               "twilio_api_v2010",
+		"reference/events-v2/openapiv3.json":            "events-v2",
+		"DigitalOcean-public.v2.yaml":                   "DigitalOcean-public-v2",
 	}
 	for rel, want := range cases {
 		if got := ServiceName(SpecFile{Repo: "myrepo", Rel: rel}); got != want {

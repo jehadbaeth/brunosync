@@ -196,17 +196,34 @@ var genericDirs = map[string]bool{
 	"schema": true, "schemas": true, "swagger": true, "yaml": true, "yml": true,
 }
 
-// ServiceName derives a service name from a spec path: the nearest parent
-// directory that is not a generic one, else the repo name.
+// genericFiles are spec file names that say nothing about the service.
+var genericFiles = map[string]bool{
+	"openapi": true, "openapi3": true, "openapiv3": true, "openapi-v3": true, "swagger": true,
+	"api": true, "apis": true, "spec": true, "schema": true, "index": true, "main": true,
+	"root": true, "definition": true, "oas": true, "oas3": true, "api-docs": true,
+}
+
+// ServiceName derives a service name from a spec path.
+//
+// A meaningful file name wins, because several specs often share one folder
+// (xero-finance.yaml, xero-payroll-uk.yaml). Generic file names such as
+// openapi.yml use the nearest parent directory that is not a generic one,
+// else the repo name.
 //
 //	orders/src/main/resources/openapi.yml -> orders
 //	services/billing/openapi.yml          -> billing
+//	specs/xero-finance.yaml               -> xero-finance
 //	openapi.yml                           -> <repo>
 func ServiceName(sf SpecFile) string {
 	if sf.Override.Name != "" {
 		return sf.Override.Name
 	}
 	parts := strings.Split(sf.Rel, "/")
+	file := parts[len(parts)-1]
+	stem := strings.TrimSuffix(file, filepath.Ext(file))
+	if !genericFiles[strings.ToLower(stem)] {
+		return Slug(stem)
+	}
 	for i := len(parts) - 2; i >= 0; i-- {
 		p := strings.ToLower(parts[i])
 		if !genericDirs[p] && p != "" {
