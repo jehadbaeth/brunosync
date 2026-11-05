@@ -130,7 +130,15 @@ func Load(path string, opt LoadOptions) (*Service, error) {
 				svc.Warnings = append(svc.Warnings, msg)
 			}
 			if prev, dup := seenIDs[o.ID]; dup {
-				return nil, fmt.Errorf("%s: operationId %q is used by both %s and %s %s", opt.Source, o.ID, prev, o.Method, p)
+				// operationIds must be unique, but real specs break that rule.
+				// Failing the whole service would be worse than a stable
+				// fallback identity for the later occurrence.
+				if opt.RequireOperationIDs {
+					return nil, fmt.Errorf("%s: operationId %q is used by both %s and %s %s", opt.Source, o.ID, prev, o.Method, p)
+				}
+				fallback := o.Method + " " + p
+				svc.Warnings = append(svc.Warnings, fmt.Sprintf("operationId %q is used by both %s and %s %s, the second one is identified by %q", o.ID, prev, o.Method, p, fallback))
+				o.ID, o.HasOperationID = fallback, false
 			}
 			seenIDs[o.ID] = o.Method + " " + p
 			if len(op.Servers) > 0 || len(item.Servers) > 0 {
@@ -192,6 +200,19 @@ func buildOperation(method, path string, item *v3.PathItem, op *v3.Operation) Op
 	if !o.HasOperationID {
 		o.ID = method + " " + path
 	}
+	// Some specs put a query string into the path key ("/responses?beta=true").
+	// It becomes regular query params, so it survives merges like any other.
+	var embedded []Param
+	if i := strings.Index(path, "?"); i >= 0 {
+		o.Path = path[:i]
+		for _, pair := range strings.Split(path[i+1:], "&") {
+			if pair == "" {
+				continue
+			}
+			name, value, _ := strings.Cut(pair, "=")
+			embedded = append(embedded, Param{Name: name, In: "query", Required: true, Value: value, Description: "fixed in the spec path"})
+		}
+	}
 
 	// Path level parameters apply unless the operation redefines them.
 	var params []*v3.Parameter
@@ -229,6 +250,8 @@ func buildOperation(method, path string, item *v3.PathItem, op *v3.Operation) Op
 			Description: strings.TrimSpace(p.Description),
 		})
 	}
+
+	o.Params = append(embedded, o.Params...)
 
 	if op.RequestBody != nil {
 		o.Body = requestBody(op.RequestBody)

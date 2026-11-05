@@ -258,3 +258,39 @@ func TestSwagger2Rejected(t *testing.T) {
 		t.Errorf("expected a clear Swagger 2.0 error, got %v", err)
 	}
 }
+
+// Found in the real world suite (openai, temporal).
+func TestEmbeddedQueryAndDuplicateOperationIDs(t *testing.T) {
+	p := writeSpec(t, `openapi: 3.0.3
+info: {title: t, version: "1"}
+paths:
+  /responses?beta=true:
+    post:
+      operationId: betaCreate
+      responses: {'200': {description: ok}}
+  /a/{id}/complete:
+    post:
+      operationId: complete
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: ok}}
+  /b/{id}/complete:
+    post:
+      operationId: complete
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: ok}}
+`)
+	svc, err := Load(p, LoadOptions{Name: "t", Source: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta := svc.Operations[0]
+	if beta.Path != "/responses" || len(beta.Params) != 1 || beta.Params[0].Name != "beta" || beta.Params[0].Value != "true" || !beta.Params[0].Required {
+		t.Errorf("embedded query not turned into a param: %q %+v", beta.Path, beta.Params)
+	}
+	if svc.Operations[1].ID != "complete" || svc.Operations[2].ID != "POST /b/{id}/complete" {
+		t.Errorf("duplicate operationId fallback wrong: %q %q", svc.Operations[1].ID, svc.Operations[2].ID)
+	}
+	if _, err := Load(p, LoadOptions{Name: "t", Source: "test", RequireOperationIDs: true}); err == nil {
+		t.Error("requireOperationIds should reject duplicate operationIds")
+	}
+}
