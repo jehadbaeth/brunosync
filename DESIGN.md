@@ -1,6 +1,6 @@
 # brunosync design
 
-Status: v0.1 implemented, local mode. Last updated 2026-11-05.
+Status: v0.1 implemented: local, zip and git outputs. Last updated 2026-11-05.
 
 This document explains why brunosync works the way it does. For usage see README.md.
 
@@ -27,6 +27,15 @@ Checked with `@usebruno/cli` 4.3.0, `@usebruno/filestore` from the same install,
 5. Bruno resolves nested variables, so `baseUrl = {{protocol}}://{{host}}:{{port}}/api` works. Variable precedence is collection < environment < folder < request < runtime.
 6. Every file brunosync writes, including files rewritten after a merge with user scripts, survives Bruno's parse and stringify (what the app does on save) without semantic change. A user saving a request in Bruno therefore never looks like an edit to the merge.
 7. Generated requests run with `bru run`: base URLs resolve from the variables, headers from the common spec are sent, and JSON, form and multipart bodies go out.
+
+### Learned from the real world suite (27 public repos)
+
+8. Specs put query strings into path keys (`/responses?beta=true`, OpenAI). They become regular query params, otherwise the merge would drop them.
+9. operationIds are not always unique (Temporal). The later duplicate gets a `METHOD path` identity with a warning instead of failing the service.
+10. Tags can differ only in case (`Webhooks` and `webhooks`, Cloudflare). On macOS and Windows that is one directory, so they share one folder.
+11. Bruno writes strings like `0_0001` and dates unquoted and reads them back as strings. YAML libraries disagree about such scalars (yaml.v3 reads `0_0001` as 1, js-yaml reads dates as timestamps). brunosync quotes them on write and reads plain scalars by strict YAML 1.2 core rules, and the harnesses judge Bruno saves with brunosync's own parser (`brunosync debug compare`), never with a third parser.
+12. Several specs per folder are common (Twilio, Xero, Adyen), so a meaningful file name is the service name. Same file names in two folders (readme's 3.0 and 3.1 examples) are reported as a collision that needs an override, never renamed automatically, because an automatic rename would silently change identities later.
+13. Specs ship Postman style placeholders as examples (`{{X-Filter}}`, Linode). They are passed through unchanged.
 
 ## 3. Architecture
 
