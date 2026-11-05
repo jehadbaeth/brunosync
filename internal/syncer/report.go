@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -12,34 +13,41 @@ import (
 
 // Report summarises one sync run.
 type Report struct {
-	DryRun   bool
-	Services []*ServiceReport
-	Skipped  []string // specs skipped on purpose (library specs, overrides)
-	Errors   []string // specs or repos that failed; their requests were left alone
-	Warnings []string // collection level warnings
-	Changes  []Change // file level changes inside the collection
+	DryRun   bool             `json:"dryRun"`
+	Services []*ServiceReport `json:"services"`
+	Skipped  []string         `json:"skipped"`  // specs skipped on purpose (library specs, overrides)
+	Errors   []string         `json:"errors"`   // specs or repos that failed; their requests were left alone
+	Warnings []string         `json:"warnings"` // collection level warnings
+	Changes  []Change         `json:"changes"`  // file level changes inside the collection
 }
 
 // ServiceReport holds the outcome for one service.
 type ServiceReport struct {
-	Name      string
-	Source    string
-	Added     []string
-	Updated   []string
-	Recreated []string
-	Moved     []string
-	Deleted   []string
-	Archived  []string
-	Unchanged int
-	Conflicts []string
-	Warnings  []string
+	Name      string   `json:"name"`
+	Source    string   `json:"source"`
+	Added     []string `json:"added"`
+	Updated   []string `json:"updated"`
+	Recreated []string `json:"recreated"`
+	Moved     []string `json:"moved"`
+	Deleted   []string `json:"deleted"`
+	Archived  []string `json:"archived"`
+	Unchanged int      `json:"unchanged"`
+	Conflicts []string `json:"conflicts"`
+	Warnings  []string `json:"warnings"`
 }
 
 // Change is one file system change.
 type Change struct {
-	Op   string // create | update | delete | move
-	Path string
-	To   string
+	Op   string `json:"op"` // create | update | delete | move
+	Path string `json:"path"`
+	To   string `json:"to,omitempty"`
+}
+
+// WriteJSON writes the report as JSON for scripts and dashboards.
+func (r *Report) WriteJSON(w io.Writer) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r)
 }
 
 // HasChanges reports whether anything in the collection changed.

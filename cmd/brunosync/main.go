@@ -83,6 +83,7 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 	cfgPath := configFlag(fs)
 	dryRun := fs.Bool("dry-run", false, "show what would change without writing anything")
 	reportPath := fs.String("report", "", "also write a Markdown report to this file (for merge request descriptions)")
+	reportJSON := fs.String("report-json", "", "also write the report as JSON to this file")
 	offline := fs.Bool("offline", false, "do not fetch git repos, use the cached clones")
 	exitCode := fs.Bool("exit-code", false, "exit with 10 when files changed and 20 when there are conflicts")
 	quiet := fs.Bool("q", false, "only print the summary")
@@ -139,6 +140,19 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 			}
 			rep.WriteMarkdown(f)
 			_ = f.Close()
+		}
+		if *reportJSON != "" {
+			f, err := os.Create(*reportJSON)
+			if err != nil {
+				fmt.Fprintln(stderr, "error:", err)
+				return exitError
+			}
+			err = rep.WriteJSON(f)
+			_ = f.Close()
+			if err != nil {
+				fmt.Fprintln(stderr, "error:", err)
+				return exitError
+			}
 		}
 	}
 	if runErr != nil {

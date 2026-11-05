@@ -164,6 +164,7 @@ Flags for `sync`:
 | `-c, --config` | config file, default `brunosync.yml` |
 | `--dry-run` | show what would change, write nothing |
 | `--report file.md` | also write the report as Markdown |
+| `--report-json file.json` | also write the report as JSON |
 | `--offline` | use cached git clones, don't fetch |
 | `--exit-code` | exit 10 when files changed, 20 on conflicts (for scripts and CI) |
 | `-q` | only print the summary |
