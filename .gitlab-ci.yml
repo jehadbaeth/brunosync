@@ -1,0 +1,82 @@
+# CI for the brunosync tool itself.
+#
+#   every push   -> vet + tests + cross compiled binaries as job artifacts
+#   main branch  -> binaries uploaded to the generic package registry as version "main"
+#   tag v*       -> binaries uploaded as that version and a GitLab release with download links
+#
+# People install by downloading one file, see README.md.
+
+stages: [test, build, publish]
+
+variables:
+  GO_IMAGE: golang:1.26
+  PACKAGE_BASE: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/brunosync"
+
+test:
+  stage: test
+  image: $GO_IMAGE
+  script:
+    - make test
+
+build:
+  stage: build
+  image: $GO_IMAGE
+  needs: [test]
+  script:
+    - make dist VERSION="${CI_COMMIT_TAG:-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}}"
+  artifacts:
+    paths: [dist/]
+    expire_in: 30 days
+
+.upload: &upload
+  stage: publish
+  image: curlimages/curl:8.11.1
+  needs: [build]
+  script:
+    - |
+      for f in dist/*; do
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "$f" "${PACKAGE_BASE}/${PACKAGE_VERSION}/$(basename "$f")"
+      done
+
+publish-main:
+  <<: *upload
+  variables:
+    PACKAGE_VERSION: main
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+publish-tag:
+  <<: *upload
+  variables:
+    PACKAGE_VERSION: $CI_COMMIT_TAG
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+/
+
+release:
+  stage: publish
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs: [publish-tag]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+/
+  script:
+    - echo "Releasing $CI_COMMIT_TAG"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: brunosync $CI_COMMIT_TAG
+    description: "Download the binary for your platform below, make it executable and put it on your PATH. Checksums are in SHA256SUMS."
+    assets:
+      links:
+        - name: brunosync-darwin-arm64 (macOS Apple Silicon)
+          url: "${PACKAGE_BASE}/${CI_COMMIT_TAG}/brunosync-darwin-arm64"
+        - name: brunosync-darwin-amd64 (macOS Intel)
+          url: "${PACKAGE_BASE}/${CI_COMMIT_TAG}/brunosync-darwin-amd64"
+        - name: brunosync-linux-amd64
+          url: "${PACKAGE_BASE}/${CI_COMMIT_TAG}/brunosync-linux-amd64"
+        - name: brunosync-linux-arm64
+          url: "${PACKAGE_BASE}/${CI_COMMIT_TAG}/brunosync-linux-arm64"
+        - name: brunosync-windows-amd64.exe
+          url: "${PACKAGE_BASE}/${CI_COMMIT_TAG}/brunosync-windows-amd64.exe"
+        - name: SHA256SUMS
+          url: "${PACKAGE_BASE}/${CI_COMMIT_TAG}/SHA256SUMS"
