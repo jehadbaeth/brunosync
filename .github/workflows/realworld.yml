@@ -1,0 +1,45 @@
+name: Real world suite
+
+# Syncs ~27 public OpenAPI repositories and checks the output against Bruno.
+# Runs weekly to catch upstream spec changes and on demand.
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "comma separated repo names from test/realworld/repos.yml (empty: all)"
+        required: false
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: run suite
+        run: |
+          if [ -n "${{ github.event.inputs.only }}" ]; then
+            test/realworld/run.sh --only "${{ github.event.inputs.only }}"
+          else
+            test/realworld/run.sh
+          fi
+      - name: results
+        if: always()
+        run: cat test/realworld/RESULTS.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realworld-results
+          path: |
+            test/realworld/RESULTS.md
+            test/realworld/results.json

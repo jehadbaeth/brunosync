@@ -1,0 +1,157 @@
+# Real world OpenAPI repositories the suite syncs and checks.
+#
+# sparse: paths (git sparse-checkout, no cone) fetched from the repo. Only
+#         these files are downloaded, which keeps huge repos cheap.
+# specs:  brunosync spec globs, relative to the repo root.
+# expect: known, accepted problems. Anything else fails the suite.
+#   errors:   substrings of brunosync load errors that are expected
+#             (for example specs that are invalid upstream)
+#
+# Picked to cover: multi file $refs, many specs per repo, many specs per
+# folder, OpenAPI 3.0 and 3.1, JSON and YAML, very large specs, edge case
+# collections (circular schemas, discriminators, callbacks, webhooks).
+
+repos:
+  - name: oai-learn
+    url: https://github.com/OAI/learn.openapis.org
+    sparse: [examples/v3.0, examples/v3.1]
+    specs: ["examples/v3.0/*.yaml", "examples/v3.1/*.yaml"]
+
+  # 3.0/ and 3.1/ contain files with the same names, which would collide as
+  # service names in one collection, so each version is its own collection.
+  - name: readme-oas-3.0
+    url: https://github.com/readmeio/oas-examples
+    sparse: [3.0/yaml]
+    specs: ["3.0/yaml/*.yaml"]
+
+  - name: readme-oas-3.1
+    url: https://github.com/readmeio/oas-examples
+    sparse: [3.1/yaml]
+    specs: ["3.1/yaml/*.yaml"]
+
+  - name: digitalocean
+    url: https://github.com/digitalocean/openapi
+    sparse: [specification]
+    specs: ["specification/DigitalOcean-public.v2.yaml"]
+
+  - name: redocly-starter
+    url: https://github.com/Redocly/openapi-starter
+    sparse: [openapi]
+    specs: ["openapi/openapi.yaml"]
+
+  - name: redocly-museum
+    url: https://github.com/Redocly/museum-openapi-example
+    sparse: [openapi.yaml]
+    specs: ["openapi.yaml"]
+
+  - name: swagger-petstore
+    url: https://github.com/swagger-api/swagger-petstore
+    sparse: [src/main/resources/openapi.yaml]
+    specs: ["src/main/resources/openapi.yaml"]
+
+  - name: github
+    url: https://github.com/github/rest-api-description
+    sparse: [descriptions/api.github.com/api.github.com.yaml]
+    specs: ["descriptions/api.github.com/api.github.com.yaml"]
+
+  - name: stripe
+    url: https://github.com/stripe/openapi
+    sparse: [latest/openapi.spec3.json]
+    specs: ["latest/openapi.spec3.json"]
+
+  - name: openai
+    url: https://github.com/openai/openai-openapi
+    sparse: [openapi.yaml]
+    specs: ["openapi.yaml"]
+
+  - name: twilio
+    url: https://github.com/twilio/twilio-oai
+    sparse: [spec/yaml]
+    specs: ["spec/yaml/*.yaml"]
+
+  - name: xero
+    url: https://github.com/XeroAPI/Xero-OpenAPI
+    sparse: ["/xero*.yaml"]
+    specs: ["xero*.yaml"]
+
+  - name: adyen
+    url: https://github.com/Adyen/adyen-openapi
+    sparse: [yaml]
+    specs: ["yaml/*.yaml"]
+
+  - name: box
+    url: https://github.com/box/box-openapi
+    sparse: [openapi/openapi.json]
+    specs: ["openapi/openapi.json"]
+
+  - name: pagerduty
+    url: https://github.com/PagerDuty/api-schema
+    sparse: [reference]
+    specs: ["reference/**/openapiv3.json"]
+
+  - name: spotify
+    url: https://github.com/sonallux/spotify-web-api
+    sparse: [fixed-spotify-open-api.yml]
+    specs: ["fixed-spotify-open-api.yml"]
+
+  - name: asana
+    url: https://github.com/Asana/openapi
+    sparse: [defs/asana_oas.yaml]
+    specs: ["defs/asana_oas.yaml"]
+
+  - name: plaid
+    url: https://github.com/plaid/plaid-openapi
+    sparse: [2020-09-14.yml]
+    specs: ["2020-09-14.yml"]
+
+  - name: sentry
+    url: https://github.com/getsentry/sentry-api-schema
+    sparse: [openapi-derefed.json]
+    specs: ["openapi-derefed.json"]
+
+  - name: cloudflare
+    url: https://github.com/cloudflare/api-schemas
+    sparse: [openapi.yaml]
+    specs: ["openapi.yaml"]
+
+  - name: linode
+    url: https://github.com/linode/linode-api-docs
+    ref: development
+    sparse: [openapi.json]
+    specs: ["openapi.json"]
+
+  - name: temporal
+    url: https://github.com/temporalio/api
+    sparse: [openapi/openapiv3.yaml]
+    specs: ["openapi/openapiv3.yaml"]
+
+  - name: mastodon
+    url: https://github.com/abraham/mastodon-openapi
+    sparse: [dist/schema.json]
+    specs: ["dist/schema.json"]
+
+  - name: vimeo
+    url: https://github.com/vimeo/openapi
+    sparse: [api.yaml]
+    specs: ["api.yaml"]
+
+  - name: elasticsearch
+    url: https://github.com/elastic/elasticsearch-specification
+    sparse: [output/openapi/elasticsearch-openapi.json]
+    specs: ["output/openapi/elasticsearch-openapi.json"]
+
+  - name: discourse
+    url: https://github.com/discourse/discourse_api_docs
+    sparse: [openapi.yml]
+    specs: ["openapi.yml"]
+
+  - name: ory-hydra
+    url: https://github.com/ory/hydra
+    sparse: [spec/api.json]
+    specs: ["spec/api.json"]
+
+  - name: ory-kratos
+    url: https://github.com/ory/kratos
+    ref: master
+    sparse: [spec/api.json]
+    specs: ["spec/api.json"]
