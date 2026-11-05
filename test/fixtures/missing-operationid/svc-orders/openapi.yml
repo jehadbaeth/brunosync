@@ -1,0 +1,27 @@
+openapi: 3.0.3
+info: {title: Orders Service, version: 2.1.0}
+servers: [{url: "https://orders.example.com/api"}]
+paths:
+  /orders/{id}:
+    get:
+      tags: [orders]
+      parameters:
+        - $ref: '../common/openapi.yml#/components/parameters/TenantHeader'
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: ok}
+        '404':
+          description: nf
+          content: {application/json: {schema: {$ref: '../common/openapi.yml#/components/schemas/Error'}}}
+  /orders:
+    post:
+      tags: [orders]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sku: {type: string, example: ABC}
+                price: {$ref: '../common/openapi.yml#/components/schemas/Money'}
+      responses: {'201': {description: created}}

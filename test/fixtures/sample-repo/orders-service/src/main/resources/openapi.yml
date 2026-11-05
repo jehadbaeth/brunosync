@@ -1,0 +1,114 @@
+openapi: 3.0.3
+info:
+  title: Orders Service
+  version: 2.1.0
+  description: Creates and tracks orders.
+servers:
+  - url: http://{host}:{port}/orders
+    variables:
+      host: {default: localhost}
+      port: {default: "8081"}
+tags:
+  - {name: orders, description: Order lifecycle}
+  - {name: attachments}
+paths:
+  /orders:
+    get:
+      operationId: listOrders
+      summary: List orders
+      tags: [orders]
+      parameters:
+        - $ref: '../../../../common/openapi.yml#/components/parameters/TenantHeader'
+        - $ref: '../../../../common/openapi.yml#/components/parameters/PageParam'
+        - {name: status, in: query, schema: {type: string, enum: [OPEN, CLOSED]}}
+      responses:
+        '200':
+          description: A page of orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Order'}
+    post:
+      operationId: createOrder
+      summary: Create an order
+      tags: [orders]
+      parameters:
+        - $ref: '../../../../common/openapi.yml#/components/parameters/TenantHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Order'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        '400':
+          description: Invalid
+          content:
+            application/json:
+              schema: {$ref: '../../../../common/openapi.yml#/components/schemas/Error'}
+  /orders/{orderId}:
+    parameters:
+      - {name: orderId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getOrder
+      summary: Get an order
+      tags: [orders]
+      responses:
+        '200':
+          description: The order
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: {$ref: '../../../../common/openapi.yml#/components/schemas/Error'}
+    delete:
+      operationId: deleteOrder
+      summary: Delete an order
+      tags: [orders]
+      deprecated: true
+      responses:
+        '204': {description: Deleted}
+  /orders/{orderId}/attachments:
+    post:
+      operationId: uploadAttachment
+      summary: Upload an attachment
+      tags: [attachments]
+      parameters:
+        - {name: orderId, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary}
+                comment: {type: string, example: Signed delivery note}
+      responses:
+        '201': {description: Stored}
+components:
+  schemas:
+    Order:
+      allOf:
+        - $ref: '../../../../common/openapi.yml#/components/schemas/Audit'
+        - type: object
+          required: [items]
+          properties:
+            customerEmail: {type: string, format: email}
+            status: {type: string, enum: [OPEN, CLOSED]}
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  sku: {type: string, example: SAT-BUS-01}
+                  quantity: {type: integer, minimum: 1}
+                  price: {$ref: '../../../../common/openapi.yml#/components/schemas/Money'}

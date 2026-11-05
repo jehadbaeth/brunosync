@@ -1,0 +1,38 @@
+openapi: 3.0.3
+info: {title: Common, version: 1.0.0}
+paths: {}
+components:
+  parameters:
+    TenantHeader:
+      name: X-Tenant
+      in: header
+      required: true
+      schema: {type: string, example: okapi}
+    PageParam:
+      name: page
+      in: query
+      schema: {type: integer, minimum: 1, default: 1}
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: {type: string, example: NOT_FOUND}
+        message: {type: string}
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: {type: number, example: 12.5}
+        currency: {type: string, enum: [EUR, USD]}
+    Audit:
+      type: object
+      properties:
+        id: {type: string, format: uuid, readOnly: true}
+        createdAt: {type: string, format: date-time, readOnly: true}
+    Node:
+      type: object
+      properties:
+        name: {type: string}
+        children:
+          type: array
+          items: {$ref: '#/components/schemas/Node'}

@@ -1,0 +1,32 @@
+openapi: 3.0.3
+info: {title: Billing, version: 0.3.0}
+servers:
+  - url: http://localhost:8082/api/v1
+paths:
+  /invoices:
+    post:
+      operationId: createInvoice
+      summary: Create an invoice
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [orderId]
+              properties:
+                orderId: {type: string, example: ord-42}
+                note: {type: string}
+      responses:
+        '201': {description: Created}
+  /cost-tree:
+    get:
+      operationId: getCostTree
+      summary: Cost breakdown tree
+      parameters:
+        - {name: depth, in: query, required: true, schema: {type: integer, example: 2}}
+      responses:
+        '200':
+          description: Tree
+          content:
+            application/json:
+              schema: {$ref: '../common/openapi.yml#/components/schemas/Node'}

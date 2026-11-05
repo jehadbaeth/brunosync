@@ -1,0 +1,21 @@
+openapi: 3.0.3
+info: {title: common, version: 1.0.0}
+paths: {}
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: {type: string, example: NOT_FOUND}
+        message: {type: string, example: Not found}
+    Money:
+      type: object
+      properties:
+        amount: {type: number, example: 12.5}
+        currency: {type: string, example: EUR}
+  parameters:
+    TenantHeader:
+      name: X-Tenant
+      in: header
+      required: true
+      schema: {type: string, example: okapi}
