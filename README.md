@@ -10,32 +10,11 @@ It replaces Bruno's built in OpenAPI Sync, which links one collection to one spe
 
 ## Install
 
-Download the binary for your platform from the project's GitLab Releases page and put it on your `PATH`.
-
-| Platform | File |
-|---|---|
-| macOS Apple Silicon | `brunosync-darwin-arm64` |
-| macOS Intel | `brunosync-darwin-amd64` |
-| Linux | `brunosync-linux-amd64` / `brunosync-linux-arm64` |
-| Windows | `brunosync-windows-amd64.exe` |
-
-The project is private, so a download needs GitLab credentials. Through the browser that just means being logged in. With curl, use a personal access token with `read_api` scope:
-
 ```sh
-curl --fail -L -o ~/.local/bin/brunosync \
-  --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-  "https://gitlab.example.com/api/v4/projects/<project id>/packages/generic/brunosync/<version>/brunosync-darwin-arm64"
-chmod +x ~/.local/bin/brunosync
-brunosync version
+curl -fsSL https://raw.githubusercontent.com/jehadbaeth/brunosync/main/install.sh | sh
 ```
 
-**macOS:** the binary is not signed by Apple. If you download it through a browser, Gatekeeper blocks it ("cannot be opened because the developer cannot be verified"). Either download with curl as above (curl does not set the quarantine flag) or clear it once:
-
-```sh
-xattr -d com.apple.quarantine ~/.local/bin/brunosync
-```
-
-`git` is only needed if you use `git:` sources in the config.
+That downloads the right binary for your machine from the latest GitHub release, verifies its checksum and puts it in `~/.local/bin`. Windows, manual downloads, pinned versions and the macOS Gatekeeper note are in [INSTALL.md](INSTALL.md).
 
 ## Quick start
 
@@ -170,6 +149,6 @@ make dist               # binaries for all platforms in dist/
 
 `test/bruno-compat/run.sh` syncs the sample fixture, round trips every file through Bruno's own parser and serializer (what the app does on save), does the same for a collection that went through a merge with user edits, then sends every request with the Bruno CLI to a local echo server and checks headers, query strings and bodies. Run it after changing the generator, and when the team updates Bruno (bump the versions in `test/bruno-compat/package.json` first).
 
-Releases: push a tag like `v0.1.0`. `.gitlab-ci.yml` tests, builds every platform, uploads to the package registry and creates a GitLab release with download links. Every push to the default branch also publishes binaries as package version `main`.
+Releases: push a tag like `v0.1.0`. `.github/workflows/release.yml` runs the tests, builds every platform and publishes a GitHub release with the binaries and `SHA256SUMS`, which is what `install.sh` downloads. `.github/workflows/ci.yml` runs tests, the Bruno compatibility harness and a smoke test of the built binary on Linux, macOS and Windows for every push. `.gitlab-ci.yml` is kept for a GitLab mirror: it tests, builds and publishes to the GitLab package registry.
 
 The design and the reasons behind it are in [DESIGN.md](DESIGN.md).
