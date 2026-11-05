@@ -27,7 +27,7 @@ function walk(d) {
       else out = fsx.stringifyRequest(fsx.parseRequest(src, { format: 'yml' }), { format: 'yml' });
     } catch (err) { console.log('PARSE FAIL', p, err.message); bad++; continue; }
     n++;
-    const d1 = diff(yaml.load(src), yaml.load(out));
+    const d1 = diff(yaml.load(src, { schema: yaml.CORE_SCHEMA }), yaml.load(out, { schema: yaml.CORE_SCHEMA }));
     if (d1.length) { bad++; console.log('DIFF', path.relative(root, p)); d1.forEach(x => console.log('   ', x)); }
   }
 }
