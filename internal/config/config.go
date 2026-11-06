@@ -30,11 +30,12 @@ const (
 
 // Config is the root of brunosync.yml.
 type Config struct {
-	Version    int        `yaml:"version"`
-	Collection Collection `yaml:"collection"`
-	Sync       Sync       `yaml:"sync"`
-	Output     Output     `yaml:"output"`
-	Repos      []Repo     `yaml:"repos"`
+	Version      int           `yaml:"version"`
+	Collection   Collection    `yaml:"collection"`
+	Sync         Sync          `yaml:"sync"`
+	Output       Output        `yaml:"output"`
+	Environments []Environment `yaml:"environments"`
+	Repos        []Repo        `yaml:"repos"`
 
 	// Dir is the directory of the config file. Relative paths resolve against it.
 	Dir string `yaml:"-"`
@@ -85,6 +86,22 @@ type GitOutput struct {
 // ShouldPush reports whether git output pushes after committing.
 func (g GitOutput) ShouldPush() bool { return g.Push == nil || *g.Push }
 
+// Environment becomes a Bruno environment file, environments/<name>.yml.
+// Values override the collection variables brunosync generates per service
+// (protocol, host, port and any other server variable). A value may contain
+// {service}, which is replaced with the service name.
+type Environment struct {
+	Name string `yaml:"name"`
+	// Defaults apply to every service that has the variable, for example
+	// protocol: https for all services.
+	Defaults map[string]string `yaml:"defaults"`
+	// Services holds per service values, keyed by service name, then by the
+	// unprefixed variable name (host, port, ...). They win over Defaults.
+	Services map[string]map[string]string `yaml:"services"`
+	// Variables are extra environment variables written as they are.
+	Variables map[string]string `yaml:"variables"`
+}
+
 // Repo is one source repository holding one or more specs.
 type Repo struct {
 	Name      string              `yaml:"name"`
@@ -104,7 +121,11 @@ type Override struct {
 	Skip   bool   `yaml:"skip"`
 }
 
-var serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+var (
+	serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	// Environment names become file names, so keep them portable.
+	envNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _.-]*$`)
+)
 
 // Load reads and validates a config file.
 func Load(path string) (*Config, error) {
@@ -184,6 +205,18 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Repos) == 0 {
 		errs = append(errs, "no repos configured")
+	}
+	envSeen := map[string]bool{}
+	for i, e := range c.Environments {
+		switch {
+		case e.Name == "":
+			errs = append(errs, fmt.Sprintf("environments[%d]: name is required", i))
+		case !envNameRe.MatchString(e.Name):
+			errs = append(errs, fmt.Sprintf("environments[%d]: name %q may only contain letters, digits, space, _, . and -", i, e.Name))
+		case envSeen[strings.ToLower(e.Name)]:
+			errs = append(errs, fmt.Sprintf("environments[%d]: duplicate name %q", i, e.Name))
+		}
+		envSeen[strings.ToLower(e.Name)] = true
 	}
 	seen := map[string]bool{}
 	for i, r := range c.Repos {

@@ -38,13 +38,17 @@ func TestStarterConfigIsValid(t *testing.T) {
 
 func TestValidation(t *testing.T) {
 	cases := map[string]string{
-		"version: 1\nrepos: []\n":                                                  "no repos",
-		"version: 1\nrepos:\n  - {path: a, git: b}\n":                              "exactly one of path or git",
-		"version: 1\nrepos:\n  - {path: a, ref: main}\n":                           "ref only applies",
-		"version: 1\nsync: {removed: nuke}\nrepos:\n  - {path: a}\n":               "sync.removed",
-		"version: 1\nrepos:\n  - {path: a}\n  - {path: b/a}\n":                     "duplicate repo name",
-		"version: 1\nrepos:\n  - {path: a, typo: 1}\n":                             "field typo not found",
-		"version: 1\nrepos:\n  - path: a\n    overrides: {x.yml: {name: 'a b'}}\n": "may only contain",
+		"version: 1\nrepos: []\n":                                                                "no repos",
+		"version: 1\nrepos:\n  - {path: a, git: b}\n":                                            "exactly one of path or git",
+		"version: 1\nrepos:\n  - {path: a, ref: main}\n":                                         "ref only applies",
+		"version: 1\nsync: {removed: nuke}\nrepos:\n  - {path: a}\n":                             "sync.removed",
+		"version: 1\nrepos:\n  - {path: a}\n  - {path: b/a}\n":                                   "duplicate repo name",
+		"version: 1\nrepos:\n  - {path: a, typo: 1}\n":                                           "field typo not found",
+		"version: 1\nrepos:\n  - path: a\n    overrides: {x.yml: {name: 'a b'}}\n":               "may only contain",
+		"version: 1\nenvironments:\n  - defaults: {host: x}\nrepos:\n  - {path: a}\n":            "name is required",
+		"version: 1\nenvironments:\n  - {name: ../prod}\nrepos:\n  - {path: a}\n":                "may only contain",
+		"version: 1\nenvironments:\n  - {name: Prod}\n  - {name: prod}\nrepos:\n  - {path: a}\n": "duplicate name",
+		"version: 1\nenvironments:\n  - {name: prod, servers: {}}\nrepos:\n  - {path: a}\n":      "field servers not found",
 	}
 	for in, want := range cases {
 		_, err := Load(write(t, in))
@@ -58,5 +62,26 @@ func TestValidation(t *testing.T) {
 func TestExampleConfigIsValid(t *testing.T) {
 	if _, err := Load(filepath.Join("..", "..", "brunosync.config.example.yml")); err != nil {
 		t.Fatalf("brunosync.config.example.yml no longer matches the schema: %v", err)
+	}
+}
+
+func TestEnvironments(t *testing.T) {
+	c, err := Load(write(t, `version: 1
+environments:
+  - name: local
+  - name: staging
+    defaults: {protocol: https, host: "{service}.staging.example.com", port: "443"}
+    services:
+      orders-service: {host: orders.internal}
+    variables: {tenant: okapi}
+repos:
+  - path: a
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Environments) != 2 || c.Environments[1].Services["orders-service"]["host"] != "orders.internal" ||
+		c.Environments[1].Defaults["port"] != "443" || c.Environments[1].Variables["tenant"] != "okapi" {
+		t.Errorf("environments not decoded: %+v", c.Environments)
 	}
 }

@@ -13,6 +13,24 @@ sync:
                               #   keep     leave the file, stop managing it
   requireOperationIds: false  # true: a missing operationId fails that spec instead of a warning
 
+# Bruno environments, written to <collection>/environments/<name>.yml.
+# Every service gets collection variables from the first server URL of its
+# spec: <service>_protocol, <service>_host, <service>_port (and any other
+# server variable). An environment overrides them. Variables you add to an
+# environment in Bruno (tokens, secrets) are kept on every sync.
+environments:
+  - name: local               # empty: the spec defaults apply
+  - name: staging
+    defaults:                 # for every service that has the variable
+      protocol: https
+      host: "{service}.staging.example.com"   # {service} is the service name
+      port: "443"
+    services:                 # per service, wins over defaults
+      propagation:
+        host: propagation.internal.example.com
+    variables:                # extra variables, written as they are
+      tenant: okapi
+
 repos:
   # A local checkout. Every openapi.yml / openapi.yaml below it is found
   # automatically. Specs without paths (shared "common" modules) are skipped,
