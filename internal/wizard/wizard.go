@@ -50,6 +50,7 @@ type wizard struct {
 	res     *syncer.LoadResult // nil when the repos or overrides changed
 	setup   bool               // the first pass through all steps of a new config
 	opened  []byte             // the config as loaded, to tell whether anything changed
+	cached  bool               // res came from cached clones only, git repos not fetched
 }
 
 // Run starts the wizard. It creates the config file when it does not exist
@@ -93,11 +94,11 @@ func (w *wizard) run() (Result, error) {
 			"Saving rewrites it without comments and keeps the old one as "+filepath.Base(w.path)+".bak.",
 			"",
 			keys)
-		// Load the specs right away so the summary can list the services.
-		if len(w.cfg.Repos) > 0 {
-			if _, err := w.load(); err != nil {
-				return Result{}, err
-			}
+		// List the services in the summary from what is already on disk.
+		// Fetching 20 repositories on every start is too slow; that waits
+		// until a step needs the current specs.
+		if err := w.loadCached(); err != nil {
+			return Result{}, err
 		}
 	} else {
 		w.ui.Banner("brunosync setup",
@@ -203,9 +204,10 @@ func isBack(err error) bool { return errors.Is(err, prompt.ErrBack) }
 // a spinner when the repos or overrides changed. Git repos are fetched once
 // per session.
 func (w *wizard) load() (*syncer.LoadResult, error) {
-	if w.res != nil {
+	if w.res != nil && !w.cached {
 		return w.res, nil
 	}
+	w.res, w.cached = nil, false
 	prepared, err := config.Prepared(w.cfg)
 	if err != nil {
 		// Nothing to load yet. Say why unless it is the obvious reason.
@@ -248,7 +250,34 @@ func (w *wizard) load() (*syncer.LoadResult, error) {
 	return res, nil
 }
 
-func (w *wizard) changed() { w.res = nil }
+func (w *wizard) changed() { w.res, w.cached = nil, false }
+
+// loadCached loads the specs without fetching: git repos come from the clone
+// cache, and repos that were never cloned show up as failed. The next load
+// fetches.
+func (w *wizard) loadCached() error {
+	prepared, err := config.Prepared(w.cfg)
+	if err != nil || len(prepared.Repos) == 0 {
+		return nil // nothing to show yet; the steps explain why
+	}
+	hasGit := false
+	for _, r := range prepared.Repos {
+		hasGit = hasGit || r.Git != ""
+	}
+	if !hasGit || w.offline {
+		_, err := w.load() // nothing would be fetched anyway
+		return err
+	}
+	var res *syncer.LoadResult
+	if _, err := w.ui.Task("Reading specs from the local cache", func() (string, error) {
+		res = syncer.LoadAll(prepared, source.Options{Offline: true})
+		return fmt.Sprintf("%d service(s)", len(res.Services)), nil
+	}); err != nil {
+		return err
+	}
+	w.res, w.cached = res, true
+	return nil
+}
 
 // ---- collection
 
@@ -1208,6 +1237,13 @@ func (w *wizard) summary() {
 		if len(r.Specs) > 0 {
 			line += "  specs " + strings.Join(r.Specs, ", ")
 		}
+		if w.res != nil && w.res.FailedRepos[config.RepoName(r)] {
+			if w.cached && r.Git != "" {
+				line += "  (not cloned yet)"
+			} else {
+				line += "  (failed, see Services)"
+			}
+		}
 		w.ui.Item("%s", line)
 	}
 
@@ -1226,6 +1262,9 @@ func (w *wizard) summary() {
 		line := fmt.Sprintf("%d with %d requests", len(ok), requests)
 		if problems > 0 {
 			line += fmt.Sprintf(", %d with problems (see Services)", problems)
+		}
+		if w.cached {
+			line += "  (from the local cache, Services fetches the latest)"
 		}
 		w.ui.Field("Services", line)
 		const maxShown = 12

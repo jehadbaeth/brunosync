@@ -366,3 +366,53 @@ func TestLocalRepoAtABranch(t *testing.T) {
 		t.Errorf("repo = %+v", r)
 	}
 }
+
+// configure must not fetch git repositories just to show the summary: it
+// reads the clone cache, and the first step that needs the specs fetches.
+func TestSummaryReadsTheCacheWithoutFetching(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "--quiet", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(repo, "openapi.yml"), []byte(miniSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "--quiet", "-m", "spec")
+	cache := t.TempDir()
+	t.Setenv("BRUNOSYNC_CACHE", cache)
+
+	path := filepath.Join(t.TempDir(), "brunosync.yml")
+	orig := "version: 1\nrepos:\n  - git: " + repo + "\n    name: mini\n"
+	if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Never cloned: the summary says so and nothing is fetched.
+	_, out := runWizard(t, path, script("7", ""))
+	if !strings.Contains(out, "(not cloned yet)") || strings.Contains(out, "Fetching repositories") {
+		t.Errorf("startup fetched or did not explain:\n%s", out)
+	}
+	if entries, _ := os.ReadDir(cache); len(entries) != 0 {
+		t.Fatalf("startup cloned into the cache: %v", entries)
+	}
+
+	// Services fetches. The next start reads the clone it left behind.
+	_, out = runWizard(t, path, script("3", "<", "7", ""))
+	if !strings.Contains(out, "Fetching repositories") || !strings.Contains(out, "mini  1 requests") {
+		t.Errorf("services did not fetch:\n%s", out)
+	}
+	_, out = runWizard(t, path, script("7", ""))
+	if !strings.Contains(out, "1 with 1 requests  (from the local cache") || strings.Contains(out, "Fetching repositories") {
+		t.Errorf("second start did not use the cache:\n%s", out)
+	}
+}
