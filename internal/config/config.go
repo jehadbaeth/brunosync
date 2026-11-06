@@ -2,8 +2,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,12 +32,12 @@ const (
 
 // Config is the root of brunosync.yml.
 type Config struct {
-	Version      int           `yaml:"version"`
-	Collection   Collection    `yaml:"collection"`
-	Sync         Sync          `yaml:"sync"`
-	Output       Output        `yaml:"output"`
-	Environments []Environment `yaml:"environments"`
-	Repos        []Repo        `yaml:"repos"`
+	Version      int           `yaml:"version,omitempty"`
+	Collection   Collection    `yaml:"collection,omitempty"`
+	Repos        []Repo        `yaml:"repos,omitempty"`
+	Environments []Environment `yaml:"environments,omitempty"`
+	Output       Output        `yaml:"output,omitempty"`
+	Sync         Sync          `yaml:"sync,omitempty"`
 
 	// Dir is the directory of the config file. Relative paths resolve against it.
 	Dir string `yaml:"-"`
@@ -43,14 +45,14 @@ type Config struct {
 
 // Collection describes the Bruno collection that brunosync writes.
 type Collection struct {
-	Path string `yaml:"path"`
-	Name string `yaml:"name"`
+	Path string `yaml:"path,omitempty"`
+	Name string `yaml:"name,omitempty"`
 }
 
 // Sync holds merge behaviour switches.
 type Sync struct {
-	Removed             string `yaml:"removed"`
-	RequireOperationIDs bool   `yaml:"requireOperationIds"`
+	Removed             string `yaml:"removed,omitempty"`
+	RequireOperationIDs bool   `yaml:"requireOperationIds,omitempty"`
 }
 
 // Output types: where the synced collection ends up.
@@ -62,25 +64,25 @@ const (
 
 // Output selects where the collection is published.
 type Output struct {
-	Type string    `yaml:"type"`
-	Zip  ZipOutput `yaml:"zip"`
-	Git  GitOutput `yaml:"git"`
+	Type string    `yaml:"type,omitempty"`
+	Zip  ZipOutput `yaml:"zip,omitempty"`
+	Git  GitOutput `yaml:"git,omitempty"`
 }
 
 // ZipOutput writes the collection as a zip file.
 type ZipOutput struct {
-	Path string `yaml:"path"` // default ./<collection name>.zip
+	Path string `yaml:"path,omitempty"` // default ./<collection name>.zip
 }
 
 // GitOutput syncs into a git repository that holds the collection.
 type GitOutput struct {
-	URL         string `yaml:"url"`
-	Branch      string `yaml:"branch"`  // default: the remote's default branch
-	Path        string `yaml:"path"`    // collection folder inside the repo, default "."
-	Message     string `yaml:"message"` // commit subject
-	Push        *bool  `yaml:"push"`    // default true
-	AuthorName  string `yaml:"authorName"`
-	AuthorEmail string `yaml:"authorEmail"`
+	URL         string `yaml:"url,omitempty"`
+	Branch      string `yaml:"branch,omitempty"`  // default: the remote's default branch
+	Path        string `yaml:"path,omitempty"`    // collection folder inside the repo, default "."
+	Message     string `yaml:"message,omitempty"` // commit subject
+	Push        *bool  `yaml:"push,omitempty"`    // default true
+	AuthorName  string `yaml:"authorName,omitempty"`
+	AuthorEmail string `yaml:"authorEmail,omitempty"`
 }
 
 // ShouldPush reports whether git output pushes after committing.
@@ -91,34 +93,34 @@ func (g GitOutput) ShouldPush() bool { return g.Push == nil || *g.Push }
 // (protocol, host, port and any other server variable). A value may contain
 // {service}, which is replaced with the service name.
 type Environment struct {
-	Name string `yaml:"name"`
+	Name string `yaml:"name,omitempty"`
 	// Defaults apply to every service that has the variable, for example
 	// protocol: https for all services.
-	Defaults map[string]string `yaml:"defaults"`
+	Defaults map[string]string `yaml:"defaults,omitempty"`
 	// Services holds per service values, keyed by service name, then by the
 	// unprefixed variable name (host, port, ...). They win over Defaults.
-	Services map[string]map[string]string `yaml:"services"`
+	Services map[string]map[string]string `yaml:"services,omitempty"`
 	// Variables are extra environment variables written as they are.
-	Variables map[string]string `yaml:"variables"`
+	Variables map[string]string `yaml:"variables,omitempty"`
 }
 
 // Repo is one source repository holding one or more specs.
 type Repo struct {
-	Name      string              `yaml:"name"`
-	Path      string              `yaml:"path"`
-	Git       string              `yaml:"git"`
-	Ref       string              `yaml:"ref"`
-	Specs     []string            `yaml:"specs"`
-	Exclude   []string            `yaml:"exclude"`
-	Overrides map[string]Override `yaml:"overrides"`
+	Name      string              `yaml:"name,omitempty"`
+	Path      string              `yaml:"path,omitempty"`
+	Git       string              `yaml:"git,omitempty"`
+	Ref       string              `yaml:"ref,omitempty"`
+	Specs     []string            `yaml:"specs,omitempty"`
+	Exclude   []string            `yaml:"exclude,omitempty"`
+	Overrides map[string]Override `yaml:"overrides,omitempty"`
 }
 
 // Override changes how one discovered spec is treated. Keyed by the spec path
 // relative to the repo root, for example "orders/src/main/resources/openapi.yml".
 type Override struct {
-	Name   string `yaml:"name"`
-	Folder string `yaml:"folder"`
-	Skip   bool   `yaml:"skip"`
+	Name   string `yaml:"name,omitempty"`
+	Folder string `yaml:"folder,omitempty"`
+	Skip   bool   `yaml:"skip,omitempty"`
 }
 
 var (
@@ -129,6 +131,21 @@ var (
 
 // Load reads and validates a config file.
 func Load(path string) (*Config, error) {
+	c, err := Decode(path)
+	if err != nil {
+		return nil, err
+	}
+	c.applyDefaults()
+	if err := c.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return c, nil
+}
+
+// Decode reads a config file as written, without defaults or validation.
+// Editors (the wizard) work on this form so that saving does not bake the
+// defaults into the file.
+func Decode(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -136,22 +153,70 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, err
 	}
-	var c Config
-	dec := yaml.NewDecoder(strings.NewReader(string(data)))
-	dec.KnownFields(true)
-	if err := dec.Decode(&c); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	c.Dir = filepath.Dir(abs)
-	c.applyDefaults()
-	if err := c.Validate(); err != nil {
+	c, err := decode(data, filepath.Dir(abs))
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	return c, nil
+}
+
+// Parse decodes config data, applies defaults and validates it. dir is the
+// directory relative paths resolve against.
+func Parse(data []byte, dir string) (*Config, error) {
+	c, err := decode(data, dir)
+	if err != nil {
+		return nil, err
+	}
+	c.applyDefaults()
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func decode(data []byte, dir string) (*Config, error) {
+	var c Config
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	c.Dir = dir
 	return &c, nil
+}
+
+// Marshal writes a config the way it was decoded: only what is set, no
+// defaults. Comments of an existing file are not kept.
+func Marshal(c *Config) ([]byte, error) {
+	out := *c
+	if out.Version == 0 {
+		out.Version = 1
+	}
+	var buf bytes.Buffer
+	buf.WriteString("# brunosync configuration. Reference: brunosync.config.example.yml\n# https://github.com/jehadbaeth/brunosync\n")
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&out); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Prepared returns a copy of a decoded config with defaults applied and
+// validated, ready for loading specs.
+func Prepared(c *Config) (*Config, error) {
+	data, err := Marshal(c)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(data, c.Dir)
 }
 
 func (c *Config) applyDefaults() {

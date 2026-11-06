@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -83,5 +84,60 @@ repos:
 	if len(c.Environments) != 2 || c.Environments[1].Services["orders-service"]["host"] != "orders.internal" ||
 		c.Environments[1].Defaults["port"] != "443" || c.Environments[1].Variables["tenant"] != "okapi" {
 		t.Errorf("environments not decoded: %+v", c.Environments)
+	}
+}
+
+// Marshal writes what was decoded and nothing more, so editing a config with
+// the wizard never bakes defaults into the file, and the result loads to the
+// same config as the original.
+func TestMarshalRoundTrip(t *testing.T) {
+	path := filepath.Join("..", "..", "brunosync.config.example.yml")
+	raw, err := Decode(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, def := range []string{"node_modules", "message:", ".zip"} {
+		if strings.Contains(string(data), def) {
+			t.Errorf("marshalled config contains the default %q:\n%s", def, data)
+		}
+	}
+	again, err := Parse(data, raw.Dir)
+	if err != nil {
+		t.Fatalf("marshalled config does not load: %v\n%s", err, data)
+	}
+	want, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(again, want) {
+		t.Errorf("round trip changed the config:\n got %+v\nwant %+v", again, want)
+	}
+
+	// marshalling twice is stable
+	raw2, err := decode(data, raw.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data2, _ := Marshal(raw2)
+	if string(data2) != string(data) {
+		t.Errorf("not stable:\n%s\n---\n%s", data, data2)
+	}
+}
+
+func TestPreparedDoesNotTouchTheRawConfig(t *testing.T) {
+	raw := &Config{Dir: t.TempDir(), Repos: []Repo{{Path: "../x"}}}
+	c, err := Prepared(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Repos[0].Name != "x" || len(c.Repos[0].Exclude) == 0 {
+		t.Errorf("defaults not applied: %+v", c.Repos[0])
+	}
+	if raw.Repos[0].Name != "" || raw.Repos[0].Exclude != nil || raw.Output.Type != "" {
+		t.Errorf("raw config changed: %+v", raw)
 	}
 }
