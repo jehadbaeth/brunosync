@@ -268,7 +268,7 @@ func TestWizardNeedsATerminal(t *testing.T) {
 func TestInitWizardThenSync(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "brunosync.yml")
-	answers := strings.Join([]string{"CLI APIs", "", fixtureRepo(t), "3", "", "2", "", "", "y"}, "\n") + "\n"
+	answers := strings.Join([]string{"CLI APIs", "", fixtureRepo(t), "4", "", "2", "", "", "y"}, "\n") + "\n"
 	var out, errb bytes.Buffer
 	if code := run([]string{"init", "-c", cfg}, strings.NewReader(answers), &out, &errb); code != exitOK {
 		t.Fatalf("exit %d:\n%s\n%s", code, out.String(), errb.String())

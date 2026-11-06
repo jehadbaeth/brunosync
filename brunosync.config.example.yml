@@ -13,6 +13,19 @@ sync:
                               #   keep     leave the file, stop managing it
   requireOperationIds: false  # true: a missing operationId fails that spec instead of a warning
 
+# Folders never searched for specs, in every repo. Entries are folders: a name
+# or path matches that folder at any depth (bin, src/test, template*). Entries
+# containing ** are globs relative to the repo root. node_modules, build,
+# target, dist and .git are always ignored. brunosync init writes this list.
+exclude:
+  - bin                       # Eclipse and Gradle output, holds copies of the specs
+  - out                       # IntelliJ output
+  - .gradle
+  - .idea
+  - src/test                  # test resources
+  - "template*"               # service templates: template-service, templates, ...
+  - "*-template"
+
 # Bruno environments, written to <collection>/environments/<name>.yml.
 # Every service gets collection variables from the first server URL of its
 # spec: <service>_protocol, <service>_host, <service>_port (and any other
@@ -52,8 +65,8 @@ repos:
     specs:                    # optional, these are the defaults
       - "**/openapi.yml"
       - "**/openapi.yaml"
-    exclude:                  # optional, added to the defaults
-      - "**/legacy/**"        # defaults: node_modules, build, target, dist, .git
+    exclude:                  # optional, folders ignored in this repo only, on top
+      - legacy                # of the top level exclude list and the defaults
 
     # Per spec tweaks, keyed by the spec path relative to the repo root.
     # The service name is derived from the path (nearest directory that is not

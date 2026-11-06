@@ -46,7 +46,7 @@ func TestNewConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brunosync.yml")
 	res, out := runWizard(t, path, script(
 		"Test APIs", "", // collection name, folder
-		fixtureRepo(t), "3", // add the fixture repo, done
+		fixtureRepo(t), "4", // add the fixture repo, done
 		"1", "", "billing-api", "", // pick billing, rename (the default action), done
 		"1", "staging", "https", "{service}.stg.example.com", "", // add staging with defaults
 		"y", "2", "", "", "8443", "", "", // orders-service: port 8443, then done
@@ -89,6 +89,9 @@ func TestNewConfig(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if strings.Contains(string(raw), "node_modules") || strings.Contains(string(raw), "zip:") {
 		t.Errorf("defaults written to the file:\n%s", raw)
+	}
+	if strings.Join(cfg.Exclude, ",") != strings.Join(config.StarterExclude, ",") {
+		t.Errorf("new config should ignore the starter folders, got %v", cfg.Exclude)
 	}
 }
 
@@ -148,7 +151,7 @@ func TestNameCollisionIsResolved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brunosync.yml")
 	_, out := runWizard(t, path, script(
 		"", "", // collection defaults
-		repo, "3", // add, done
+		repo, "4", // add, done
 		"2", "", "v1-b", "", // pick the second spec, rename it, done
 		"2", "", // no environments, folder output
 		"", "n", // save
@@ -174,7 +177,7 @@ func TestRepoWithoutSpecsAsksForPatterns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brunosync.yml")
 	_, out := runWizard(t, path, script(
 		"", "",
-		repo, "*-api.yaml", "3", // nothing matches the defaults, give a pattern, then done
+		repo, "*-api.yaml", "4", // nothing matches the defaults, give a pattern, then done
 		"", "2", "", "", "n", // services, no environments, output, save, no sync
 	))
 	if !strings.Contains(out, "no spec files match") {
@@ -247,9 +250,9 @@ func TestBackInSetupGoesToThePreviousStep(t *testing.T) {
 		"First", "", // collection
 		"<",          // no repo yet: back to the collection
 		"Second", "", // collection again
-		fixtureRepo(t), "3", // add the repo, done
+		fixtureRepo(t), "4", // add the repo, done
 		"<", // services: back to the repositories
-		"3", // repositories done
+		"4", // repositories done
 		"",  // services done
 		"2", // no environments
 		"",  // folder output
@@ -351,7 +354,7 @@ func TestLocalRepoAtABranch(t *testing.T) {
 		"'"+repo+"'", // quoted, as a terminal pastes a dragged folder
 		"2",          // read a branch
 		"nope", "release",
-		"3", "", "2", "", "", "n",
+		"4", "", "2", "", "", "n",
 	))
 	for _, want := range []string{"git checkout on main", "✗ no branch or tag nope", "✓ found", "orders-api                  1 requests"} {
 		if !strings.Contains(out, want) {
@@ -408,11 +411,58 @@ func TestSummaryReadsTheCacheWithoutFetching(t *testing.T) {
 
 	// Services fetches. The next start reads the clone it left behind.
 	_, out = runWizard(t, path, script("3", "<", "7", ""))
-	if !strings.Contains(out, "Fetching repositories") || !strings.Contains(out, "mini  1 requests") {
+	if !strings.Contains(out, "Fetching repositories") || !strings.Contains(out, "✓ included, 1 requests") {
 		t.Errorf("services did not fetch:\n%s", out)
 	}
 	_, out = runWizard(t, path, script("7", ""))
 	if !strings.Contains(out, "1 with 1 requests  (from the local cache") || strings.Contains(out, "Fetching repositories") {
 		t.Errorf("second start did not use the cache:\n%s", out)
+	}
+}
+
+func TestIgnoredFoldersShowWhatTheyHide(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brunosync.yml")
+	orig := "version: 1\nrepos:\n  - path: " + fixtureRepo(t) + "\n"
+	if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out := runWizard(t, path, script(
+		"2", "3", // repositories, ignored folders
+		"bad[", "bin, orders-service", // an invalid pattern first
+		"4",      // repositories done
+		"1", "n", // save, no sync
+	))
+	for _, want := range []string{
+		"is not a valid pattern",
+		"hides 1 spec(s): sample-repo:orders-service/src/main/resources/openapi.yml",
+		"Ignored       bin, orders-service (and build, target, dist, node_modules)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output misses %q:\n%s", want, out)
+		}
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.Exclude, ",") != "bin,orders-service" {
+		t.Errorf("exclude = %v", cfg.Exclude)
+	}
+	if res := syncer.LoadAll(cfg, source.Options{}); len(res.Services) != 1 {
+		t.Errorf("services after ignoring orders-service: %d", len(res.Services))
+	}
+}
+
+func TestServicePickerShowsStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brunosync.yml")
+	orig := "version: 1\nrepos:\n  - path: " + fixtureRepo(t) + "\n    overrides:\n      billing/openapi.yml: {skip: true}\n"
+	if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out := runWizard(t, path, script("3", "<", "7", ""))
+	for _, want := range []string{"○ skipped", "✓ included, 5 requests"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("picker misses %q:\n%s", want, out)
+		}
 	}
 }

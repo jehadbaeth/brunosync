@@ -141,3 +141,41 @@ func TestPreparedDoesNotTouchTheRawConfig(t *testing.T) {
 		t.Errorf("raw config changed: %+v", raw)
 	}
 }
+
+func TestExcludeEntries(t *testing.T) {
+	for in, want := range map[string]string{
+		"bin":              "**/bin/**",
+		"/src/test/":       "**/src/test/**",
+		"template*":        "**/template*/**",
+		"**/legacy/**":     "**/legacy/**",
+		"docs/**/old.yaml": "docs/**/old.yaml",
+	} {
+		if got := ExcludePattern(in); got != want {
+			t.Errorf("ExcludePattern(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if CheckExclude("bin") != "" || CheckExclude(" / ") == "" || CheckExclude("bad[") == "" {
+		t.Error("CheckExclude")
+	}
+	c, err := Parse([]byte("version: 1\nexclude: [bin]\nrepos:\n  - path: .\n    exclude: [legacy]\n"), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(c.Repos[0].Exclude, " ")
+	if !strings.Contains(got, "**/build/**") || !strings.HasSuffix(got, "**/bin/** **/legacy/**") {
+		t.Errorf("repo excludes = %s", got)
+	}
+	if _, err := Parse([]byte("version: 1\nexclude: [\"bad[\"]\nrepos:\n  - path: .\n"), t.TempDir()); err == nil {
+		t.Error("invalid exclude accepted")
+	}
+}
+
+func TestStarterIgnoresTheStarterFolders(t *testing.T) {
+	c, err := decode([]byte(Starter), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(c.Exclude, ",") != strings.Join(StarterExclude, ",") {
+		t.Errorf("Starter exclude %v differs from StarterExclude %v", c.Exclude, StarterExclude)
+	}
+}

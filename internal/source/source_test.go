@@ -199,3 +199,42 @@ func TestResolveLocalGitAtABranch(t *testing.T) {
 		t.Error("uncommitted file gone")
 	}
 }
+
+// The starter list keeps compiler output, test resources and service
+// templates out of the services.
+func TestStarterExclude(t *testing.T) {
+	dir := t.TempDir()
+	for _, rel := range []string{
+		"orders/src/main/resources/openapi.yml",
+		"orders/bin/main/openapi.yml",
+		"orders/out/production/resources/openapi.yml",
+		"orders/src/test/resources/openapi.yml",
+		"template-service/openapi.yml",
+		"templates/basic/openapi.yml",
+		"service-template/openapi.yml",
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("openapi: 3.0.3\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Parse([]byte("version: 1\nrepos:\n  - path: .\n"), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Exclude = config.StarterExclude
+	cfg, err = config.Prepared(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := Discover(cfg.Repos[0], dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Rel != "orders/src/main/resources/openapi.yml" {
+		t.Errorf("found %v", files)
+	}
+}

@@ -52,7 +52,20 @@ type UI interface {
 	Info(format string, a ...any)
 	Item(format string, a ...any) // indented detail under the previous line
 	Field(key, value string)      // one "key   value" line of a summary
+	// Badge colors a short status word for use inside labels and menu
+	// options. Put it at the end of the text.
+	Badge(kind Kind, text string) string
 }
+
+// Kind picks the color of a badge.
+type Kind int
+
+const (
+	KindOK Kind = iota
+	KindWarn
+	KindErr
+	KindDim
+)
 
 // Claude Code's palette.
 var (
@@ -141,6 +154,18 @@ func (p printer) Item(format string, a ...any) {
 
 func (p printer) Field(key, value string) {
 	p.line("  " + p.st.dim.Render(fmt.Sprintf("%-14s", key)) + value)
+}
+
+func (p printer) Badge(kind Kind, text string) string {
+	switch kind {
+	case KindOK:
+		return p.st.ok.Render(text)
+	case KindWarn:
+		return p.st.warn.Render(text)
+	case KindErr:
+		return p.st.err.Render(text)
+	}
+	return p.st.dim.Render(text)
 }
 
 // done renders the line an answered question leaves behind.

@@ -12,9 +12,12 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 
 	"github.com/jehadbaeth/brunosync/internal/config"
 	"github.com/jehadbaeth/brunosync/internal/gen"
@@ -75,7 +78,7 @@ func Run(opt Options) (Result, error) {
 		}
 		w.exists = true
 	} else if errors.Is(err, os.ErrNotExist) {
-		w.cfg = &config.Config{Version: 1, Dir: filepath.Dir(abs)}
+		w.cfg = &config.Config{Version: 1, Dir: filepath.Dir(abs), Exclude: slices.Clone(config.StarterExclude)}
 	} else {
 		return Result{}, err
 	}
@@ -105,7 +108,7 @@ func (w *wizard) run() (Result, error) {
 			"Writes "+w.path,
 			"",
 			"1. collection name and folder",
-			"2. repositories with OpenAPI specs (checked as you add them)",
+			"2. repositories with OpenAPI specs (checked as you add them) and folders to ignore",
 			"3. service names",
 			"4. environments: hosts and ports for staging, prod, ...",
 			"5. where the collection goes: folder, zip or git",
@@ -336,7 +339,8 @@ func (w *wizard) editRepos() error {
 		for _, r := range w.cfg.Repos {
 			w.ui.OK("%s  %s", config.RepoName(r), repoSource(r))
 		}
-		i, err := w.ui.Choose("Repositories", []string{"Add another repository", "Remove a repository", "Done"}, 0)
+		w.ui.Info("Ignored in every repository: %s", ignoredSummary(w.cfg.Exclude))
+		i, err := w.ui.Choose("Repositories", []string{"Add another repository", "Remove a repository", "Ignored folders", "Done"}, 0)
 		if err != nil {
 			return err
 		}
@@ -346,12 +350,77 @@ func (w *wizard) editRepos() error {
 		case 1:
 			err = w.removeRepo()
 		case 2:
+			err = w.editIgnored()
+		case 3:
 			return nil
 		}
 		if err != nil && !isBack(err) {
 			return err
 		}
 	}
+}
+
+// alwaysIgnored names the folders brunosync ignores without being told.
+const alwaysIgnored = "build, target, dist, node_modules"
+
+func ignoredSummary(exclude []string) string {
+	if len(exclude) == 0 {
+		return alwaysIgnored
+	}
+	return strings.Join(exclude, ", ") + " (and " + alwaysIgnored + ")"
+}
+
+// editIgnored edits the folders that are never searched for specs. The
+// check shows right away which of the specs found so far a list would hide.
+func (w *wizard) editIgnored() error {
+	w.ui.Section("Ignored folders")
+	w.ui.Info("Never searched for specs, in every repository. A name matches that folder at any depth (bin, src/test, template*).")
+	w.ui.Info("%s are always ignored. '-' ignores nothing else.", alwaysIgnored)
+	answer, err := w.ui.AskValid("Folders to ignore, comma separated", strings.Join(w.cfg.Exclude, ", "), func(s string) (string, error) {
+		if strings.TrimSpace(s) == "-" {
+			return "only " + alwaysIgnored, nil
+		}
+		list := splitList(s)
+		for _, e := range list {
+			if msg := config.CheckExclude(e); msg != "" {
+				return "", errors.New(msg)
+			}
+		}
+		return w.hiddenBy(list), nil
+	})
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(answer) == "-" {
+		w.cfg.Exclude = nil
+	} else {
+		w.cfg.Exclude = splitList(answer)
+	}
+	w.changed()
+	return nil
+}
+
+// hiddenBy tells which of the specs found so far an ignore list would hide.
+func (w *wizard) hiddenBy(list []string) string {
+	if w.res == nil || len(w.res.Specs) == 0 {
+		return ""
+	}
+	var hidden []string
+	for _, s := range w.res.Specs {
+		for _, e := range list {
+			if ok, _ := doublestar.Match(config.ExcludePattern(e), s.Rel); ok {
+				hidden = append(hidden, s.Repo+":"+s.Rel)
+				break
+			}
+		}
+	}
+	switch {
+	case len(hidden) == 0:
+		return "hides none of the specs found so far"
+	case len(hidden) > 3:
+		return fmt.Sprintf("hides %d specs: %s, ...", len(hidden), strings.Join(hidden[:3], ", "))
+	}
+	return fmt.Sprintf("hides %d spec(s): %s", len(hidden), strings.Join(hidden, ", "))
 }
 
 // checkSource validates a repo answer the moment it is given: a folder must
@@ -649,19 +718,20 @@ func (w *wizard) printSpecs(res *syncer.LoadResult, repo string) {
 	}
 }
 
-func specLabel(s syncer.SpecStatus) string {
-	label := s.Name
+// specLabel is a menu option for a spec, ending in a colored status.
+func (w *wizard) specLabel(s syncer.SpecStatus) string {
+	label := fmt.Sprintf("%-24s %s:%s  ", s.Name, s.Repo, s.Rel)
 	switch s.Status {
 	case syncer.SpecOK:
-		label += fmt.Sprintf("  %d requests", len(s.Service.Operations))
+		return label + w.ui.Badge(prompt.KindOK, fmt.Sprintf("✓ included, %d requests", len(s.Service.Operations)))
 	case syncer.SpecSkipped:
-		label += "  (skipped)"
+		return label + w.ui.Badge(prompt.KindWarn, "○ skipped")
 	case syncer.SpecDuplicate:
-		label += "  (name taken)"
+		return label + w.ui.Badge(prompt.KindErr, "⚠ name taken, not synced")
 	case syncer.SpecFailed:
-		label += "  (failed)"
+		return label + w.ui.Badge(prompt.KindErr, "✗ failed to load")
 	}
-	return label + "  " + s.Repo + ":" + s.Rel
+	return label
 }
 
 func (w *wizard) editServices() error {
@@ -695,7 +765,7 @@ func (w *wizard) editServices() error {
 		dups, def := 0, -1
 		labels := make([]string, 0, len(specs)+1)
 		for k, s := range specs {
-			labels = append(labels, specLabel(s))
+			labels = append(labels, w.specLabel(s))
 			if s.Status == syncer.SpecDuplicate {
 				dups++
 				if def < 0 {
@@ -1246,6 +1316,8 @@ func (w *wizard) summary() {
 		}
 		w.ui.Item("%s", line)
 	}
+
+	w.ui.Field("Ignored", ignoredSummary(c.Exclude))
 
 	if w.res != nil && len(c.Repos) > 0 {
 		var ok []syncer.SpecStatus

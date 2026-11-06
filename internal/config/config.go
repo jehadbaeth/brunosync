@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	yaml "go.yaml.in/yaml/v3"
 )
 
@@ -21,7 +22,35 @@ const DefaultFile = "brunosync.yml"
 var (
 	DefaultSpecs   = []string{"**/openapi.yml", "**/openapi.yaml"}
 	DefaultExclude = []string{"**/node_modules/**", "**/build/**", "**/target/**", "**/dist/**", "**/.git/**"}
+
+	// StarterExclude is what a new config ignores in every repository on
+	// top of DefaultExclude: IDE and compiler output that holds copies of
+	// the specs, test resources, and service templates.
+	StarterExclude = []string{"bin", "out", ".gradle", ".idea", "src/test", "template*", "*-template"}
 )
+
+// CheckExclude returns what is wrong with an exclude entry, or "".
+func CheckExclude(entry string) string {
+	if strings.Trim(strings.TrimSpace(entry), "/") == "" {
+		return "empty entry"
+	}
+	if !doublestar.ValidatePattern(ExcludePattern(entry)) {
+		return fmt.Sprintf("%q is not a valid pattern", entry)
+	}
+	return ""
+}
+
+// ExcludePattern turns an exclude entry into a glob relative to the repo
+// root. Entries are folders: a name or a path without "**" matches that
+// folder at any depth (bin, src/test, template*). Entries with "**" are
+// used as they are.
+func ExcludePattern(entry string) string {
+	entry = strings.Trim(strings.TrimSpace(entry), "/")
+	if strings.Contains(entry, "**") {
+		return entry
+	}
+	return "**/" + entry + "/**"
+}
 
 // Removed endpoint handling (DESIGN.md 4.3).
 const (
@@ -32,9 +61,11 @@ const (
 
 // Config is the root of brunosync.yml.
 type Config struct {
-	Version      int           `yaml:"version,omitempty"`
-	Collection   Collection    `yaml:"collection,omitempty"`
-	Repos        []Repo        `yaml:"repos,omitempty"`
+	Version    int        `yaml:"version,omitempty"`
+	Collection Collection `yaml:"collection,omitempty"`
+	Repos      []Repo     `yaml:"repos,omitempty"`
+	// Exclude lists folders never searched for specs, in every repo.
+	Exclude      []string      `yaml:"exclude,omitempty"`
 	Environments []Environment `yaml:"environments,omitempty"`
 	Output       Output        `yaml:"output,omitempty"`
 	Sync         Sync          `yaml:"sync,omitempty"`
@@ -252,7 +283,13 @@ func (c *Config) applyDefaults() {
 		if len(r.Specs) == 0 {
 			r.Specs = DefaultSpecs
 		}
-		r.Exclude = append(append([]string{}, DefaultExclude...), r.Exclude...)
+		var exclude []string
+		for _, list := range [][]string{DefaultExclude, c.Exclude, r.Exclude} {
+			for _, e := range list {
+				exclude = append(exclude, ExcludePattern(e))
+			}
+		}
+		r.Exclude = exclude
 		if r.Name == "" {
 			r.Name = repoNameFrom(r)
 		}
@@ -281,6 +318,11 @@ func (c *Config) Validate() error {
 		}
 	default:
 		errs = append(errs, fmt.Sprintf("output.type must be dir, zip or git, got %q", c.Output.Type))
+	}
+	for _, e := range c.Exclude {
+		if msg := CheckExclude(e); msg != "" {
+			errs = append(errs, "exclude: "+msg)
+		}
 	}
 	if len(c.Repos) == 0 {
 		errs = append(errs, "no repos configured")
@@ -401,7 +443,7 @@ repos:
   # A local checkout:
   - path: ../backend
     # specs: ["**/openapi.yml", "**/openapi.yaml"]   # default
-    # exclude: ["**/legacy/**"]
+    # exclude: [legacy]       # more folders to ignore in this repo only
     # overrides:
     #   orders/src/main/resources/openapi.yml: { name: orders, folder: "Orders" }
     #   tools/openapi.yml: { skip: true }
@@ -409,6 +451,13 @@ repos:
   # A remote repo, cloned with your normal git credentials:
   # - git: git@gitlab.example.com:platform/flight-dynamics.git
   #   ref: main
+  # A repo on this machine, read at a branch (your working copy is not touched):
+  # - git: ../orders-service
+  #   ref: release
+
+# Folders never searched for specs, in every repo. A name matches that folder
+# at any depth. build, target, dist and node_modules are always ignored.
+exclude: [bin, out, .gradle, .idea, src/test, "template*", "*-template"]
 
 # Bruno environments, written to <collection>/environments/<name>.yml. They
 # override the <service>_protocol/_host/_port variables taken from the specs.
