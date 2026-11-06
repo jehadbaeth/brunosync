@@ -129,6 +129,20 @@ var (
 	envNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _.-]*$`)
 )
 
+// ValidServiceName reports whether s can be used as a service name override.
+func ValidServiceName(s string) bool { return serviceNameRe.MatchString(s) }
+
+// ValidEnvName reports whether s can be used as an environment name.
+func ValidEnvName(s string) bool { return envNameRe.MatchString(s) }
+
+// RepoName is the name a repo gets when none is set.
+func RepoName(r Repo) string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return repoNameFrom(&r)
+}
+
 // Load reads and validates a config file.
 func Load(path string) (*Config, error) {
 	c, err := Decode(path)
@@ -315,7 +329,7 @@ func (c *Config) ApplyOutputDefaults() {
 		c.Output.Type = OutputDir
 	}
 	if c.Output.Zip.Path == "" {
-		c.Output.Zip.Path = "./" + slugName(c.Collection.Name) + ".zip"
+		c.Output.Zip.Path = DefaultZipPath(c.Collection.Name)
 	}
 	if c.Output.Git.Path == "" {
 		c.Output.Git.Path = "."
@@ -323,6 +337,11 @@ func (c *Config) ApplyOutputDefaults() {
 	if c.Output.Git.Message == "" {
 		c.Output.Git.Message = "Update API collection (brunosync)"
 	}
+}
+
+// DefaultZipPath is the zip file used when output.zip.path is not set.
+func DefaultZipPath(collectionName string) string {
+	return "./" + slugName(collectionName) + ".zip"
 }
 
 func slugName(s string) string {
