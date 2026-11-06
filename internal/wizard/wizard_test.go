@@ -46,8 +46,8 @@ func TestNewConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brunosync.yml")
 	res, out := runWizard(t, path, script(
 		"Test APIs", "", // collection name, folder
-		fixtureRepo(t), "", // add the fixture repo, done
-		"1", "1", "billing-api", "", // rename spec 1 (billing), done
+		fixtureRepo(t), "3", // add the fixture repo, done
+		"1", "", "billing-api", "", // pick billing, rename (the default action), done
 		"1", "staging", "https", "{service}.stg.example.com", "", // add staging with defaults
 		"y", "2", "", "", "8443", "", "", // orders-service: port 8443, then done
 		"tenant=okapi", "", // one extra variable
@@ -148,9 +148,9 @@ func TestNameCollisionIsResolved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brunosync.yml")
 	_, out := runWizard(t, path, script(
 		"", "", // collection defaults
-		repo, "", // add, done
-		"", "2", "v1-b", "", // rename is the default action while names collide
-		"", "", // no environments, folder output
+		repo, "3", // add, done
+		"2", "", "v1-b", "", // pick the second spec, rename it, done
+		"2", "", // no environments, folder output
 		"", "n", // save
 	))
 	if !strings.Contains(out, "NAME TAKEN") {
@@ -174,8 +174,8 @@ func TestRepoWithoutSpecsAsksForPatterns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brunosync.yml")
 	_, out := runWizard(t, path, script(
 		"", "",
-		repo, "*-api.yaml", "", // nothing matches the defaults, give a pattern, then done
-		"", "", "", "", "n",
+		repo, "*-api.yaml", "3", // nothing matches the defaults, give a pattern, then done
+		"", "2", "", "", "n", // services, no environments, output, save, no sync
 	))
 	if !strings.Contains(out, "no spec files match") {
 		t.Errorf("missing explanation:\n%s", out)
@@ -213,5 +213,94 @@ func TestQuitWithoutSaving(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); string(b) != orig {
 		t.Error("file changed")
+	}
+}
+
+// Esc ("<" in the plain UI) in the middle of changing an environment must
+// leave the environment exactly as it was, even after some answers.
+func TestBackCancelsAnEnvironmentEdit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brunosync.yml")
+	orig := "version: 1\nrepos:\n  - path: " + fixtureRepo(t) + "\nenvironments:\n  - name: staging\n    defaults:\n      host: stg.example.com\n"
+	if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out := runWizard(t, path, script(
+		"4", "2", "1", // environments, change, staging
+		"", "ftp", "<", // keep the name, set a protocol, then go back
+		"4",     // environments done
+		"7", "", // quit, nothing changed
+	))
+	for _, want := range []string{"Cancelled, staging is unchanged", "Quit? Nothing was changed."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output misses %q:\n%s", want, out)
+		}
+	}
+	if b, _ := os.ReadFile(path); string(b) != orig {
+		t.Error("file changed")
+	}
+}
+
+// In the first pass, going back returns to the previous step.
+func TestBackInSetupGoesToThePreviousStep(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brunosync.yml")
+	res, out := runWizard(t, path, script(
+		"First", "", // collection
+		"<",          // no repo yet: back to the collection
+		"Second", "", // collection again
+		fixtureRepo(t), "3", // add the repo, done
+		"<", // services: back to the repositories
+		"3", // repositories done
+		"",  // services done
+		"2", // no environments
+		"",  // folder output
+		"", "n",
+	))
+	if !res.Saved {
+		t.Fatalf("not saved:\n%s", out)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Collection.Name != "Second" || len(cfg.Repos) != 1 {
+		t.Errorf("config wrong: %+v", cfg)
+	}
+}
+
+// Services must say why there is nothing to pick instead of returning
+// silently.
+func TestServicesExplainWhyTheyAreEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brunosync.yml")
+	orig := "version: 1\nrepos:\n  - path: " + t.TempDir() + "\n"
+	if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out := runWizard(t, path, script("3", "7", ""))
+	for _, want := range []string{"no spec files match", "Fix the repositories above"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output misses %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestSummaryShowsTheCurrentConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brunosync.yml")
+	orig := "version: 1\ncollection:\n  name: Mine\nrepos:\n  - path: " + fixtureRepo(t) +
+		"\nenvironments:\n  - name: staging\n    defaults:\n      port: \"8443\"\noutput:\n  type: zip\n"
+	if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out := runWizard(t, path, script("7", ""))
+	for _, want := range []string{
+		"Mine in ./collection",
+		"sample-repo  " + fixtureRepo(t),
+		"2 with 7 requests",
+		"orders-service              5 requests",
+		"staging  port 8443",
+		"zip file ./mine.zip",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary misses %q:\n%s", want, out)
+		}
 	}
 }

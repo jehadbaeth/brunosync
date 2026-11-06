@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jehadbaeth/brunosync/internal/config"
@@ -46,6 +48,8 @@ type wizard struct {
 	offline bool
 	fetched map[string]bool    // git sources fetched in this session
 	res     *syncer.LoadResult // nil when the repos or overrides changed
+	setup   bool               // the first pass through all steps of a new config
+	opened  []byte             // the config as loaded, to tell whether anything changed
 }
 
 // Run starts the wizard. It creates the config file when it does not exist
@@ -65,6 +69,9 @@ func Run(opt Options) (Result, error) {
 		if w.cfg, err = config.Decode(abs); err != nil {
 			return Result{}, err
 		}
+		if w.opened, err = config.Marshal(w.cfg); err != nil {
+			return Result{}, err
+		}
 		w.exists = true
 	} else if errors.Is(err, os.ErrNotExist) {
 		w.cfg = &config.Config{Version: 1, Dir: filepath.Dir(abs)}
@@ -79,10 +86,19 @@ func Run(opt Options) (Result, error) {
 }
 
 func (w *wizard) run() (Result, error) {
+	keys := "Esc goes back one step. Ctrl+C quits without saving."
 	if w.exists {
 		w.ui.Banner("brunosync configure",
 			"Editing "+w.path,
-			"Saving rewrites it without comments and keeps the old one as "+filepath.Base(w.path)+".bak.")
+			"Saving rewrites it without comments and keeps the old one as "+filepath.Base(w.path)+".bak.",
+			"",
+			keys)
+		// Load the specs right away so the summary can list the services.
+		if len(w.cfg.Repos) > 0 {
+			if _, err := w.load(); err != nil {
+				return Result{}, err
+			}
+		}
 	} else {
 		w.ui.Banner("brunosync setup",
 			"Writes "+w.path,
@@ -91,12 +107,25 @@ func (w *wizard) run() (Result, error) {
 			"2. repositories with OpenAPI specs (checked as you add them)",
 			"3. service names",
 			"4. environments: hosts and ports for staging, prod, ...",
-			"5. where the collection goes: folder, zip or git")
-		for _, step := range []func() error{w.editCollection, w.editRepos, w.editServices, w.editEnvironments, w.editOutput} {
-			if err := step(); err != nil {
+			"5. where the collection goes: folder, zip or git",
+			"",
+			keys)
+		w.setup = true
+		steps := []func() error{w.editCollection, w.editRepos, w.editServices, w.editEnvironments, w.editOutput}
+		for i := 0; i < len(steps); {
+			err := steps[i]()
+			switch {
+			case isBack(err) && i == 0:
+				w.ui.Info("This is the first step. Ctrl+C quits.")
+			case isBack(err):
+				i--
+			case err != nil:
 				return Result{}, err
+			default:
+				i++
 			}
 		}
+		w.setup = false
 	}
 	for {
 		w.summary()
@@ -109,6 +138,9 @@ func (w *wizard) run() (Result, error) {
 			"Collection name and folder",
 			"Quit without saving",
 		}, 0)
+		if isBack(err) {
+			i, err = 6, nil // nothing to go back to, offer to quit
+		}
 		if err != nil {
 			return Result{}, err
 		}
@@ -126,6 +158,9 @@ func (w *wizard) run() (Result, error) {
 				question = "Run brunosync sync now? It commits and pushes to " + w.cfg.Output.Git.URL
 			}
 			runSync, err := w.ui.Confirm(question, w.cfg.Output.Type != config.OutputGit)
+			if isBack(err) {
+				runSync, err = false, nil
+			}
 			if err != nil {
 				return Result{}, err
 			}
@@ -141,20 +176,28 @@ func (w *wizard) run() (Result, error) {
 		case 5:
 			err = w.editCollection()
 		case 6:
-			quit, err := w.ui.Confirm("Quit without saving?", false)
-			if err != nil {
+			question := "Quit without saving?"
+			if !w.dirty() {
+				question = "Quit? Nothing was changed."
+			}
+			quit, err := w.ui.Confirm(question, !w.dirty())
+			if err != nil && !isBack(err) {
 				return Result{}, err
 			}
 			if quit {
-				w.ui.Info("Nothing was saved.")
+				if w.dirty() {
+					w.ui.Info("Nothing was saved.")
+				}
 				return Result{Path: w.path}, nil
 			}
 		}
-		if err != nil {
+		if err != nil && !isBack(err) {
 			return Result{}, err
 		}
 	}
 }
+
+func isBack(err error) bool { return errors.Is(err, prompt.ErrBack) }
 
 // load returns the loader result for the current config, loading it behind
 // a spinner when the repos or overrides changed. Git repos are fetched once
@@ -165,9 +208,11 @@ func (w *wizard) load() (*syncer.LoadResult, error) {
 	}
 	prepared, err := config.Prepared(w.cfg)
 	if err != nil {
-		// Only possible while no repo is configured.
-		w.res = &syncer.LoadResult{FailedServices: map[string]bool{}, FailedRepos: map[string]bool{}}
-		return w.res, nil
+		// Nothing to load yet. Say why unless it is the obvious reason.
+		if len(w.cfg.Repos) > 0 {
+			w.ui.Fail("Cannot load the specs: %v", err)
+		}
+		return &syncer.LoadResult{FailedServices: map[string]bool{}, FailedRepos: map[string]bool{}}, nil
 	}
 	offline := w.offline
 	if !offline {
@@ -209,6 +254,9 @@ func (w *wizard) changed() { w.res = nil }
 
 func (w *wizard) editCollection() error {
 	w.ui.Section("Collection")
+	if w.cfg.Collection.Name != "" || w.cfg.Collection.Path != "" {
+		w.ui.Info("Now: %s in %s", or(w.cfg.Collection.Name, "APIs"), or(w.cfg.Collection.Path, "./collection"))
+	}
 	name, err := w.ui.AskValid("Name shown in Bruno", or(w.cfg.Collection.Name, "APIs"), required)
 	if err != nil {
 		return err
@@ -250,16 +298,16 @@ func (w *wizard) editRepos() error {
 	for {
 		w.ui.Section("Repositories")
 		if len(w.cfg.Repos) == 0 {
-			w.ui.Info("Add the repositories that hold your OpenAPI specs. Local checkouts and git URLs both work.")
+			w.ui.Info("Add the repositories that hold your OpenAPI specs, one at a time. Local checkouts and git URLs both work.")
 			if err := w.addRepo(); err != nil {
-				return err
+				return err // Esc with no repo leaves the step
 			}
 			continue
 		}
 		for _, r := range w.cfg.Repos {
 			w.ui.OK("%s  %s", config.RepoName(r), repoSource(r))
 		}
-		i, err := w.ui.Choose("Repositories", []string{"Add another repository", "Remove a repository", "Done"}, 2)
+		i, err := w.ui.Choose("Repositories", []string{"Add another repository", "Remove a repository", "Done"}, 0)
 		if err != nil {
 			return err
 		}
@@ -271,7 +319,7 @@ func (w *wizard) editRepos() error {
 		case 2:
 			return nil
 		}
-		if err != nil {
+		if err != nil && !isBack(err) {
 			return err
 		}
 	}
@@ -387,7 +435,9 @@ func (w *wizard) scanRepo(idx int) error {
 				}
 				return w.countMatches(idx, splitList(s))
 			})
-			if err != nil {
+			if isBack(err) {
+				patterns = ""
+			} else if err != nil {
 				return err
 			}
 			if p := splitList(patterns); len(p) > 0 {
@@ -396,7 +446,7 @@ func (w *wizard) scanRepo(idx int) error {
 			}
 		} else {
 			keep, err := w.ui.Confirm("Keep this repository anyway?", false)
-			if err != nil {
+			if err != nil && !isBack(err) {
 				return err
 			}
 			if keep {
@@ -499,15 +549,18 @@ func (w *wizard) printSpecs(res *syncer.LoadResult, repo string) {
 }
 
 func specLabel(s syncer.SpecStatus) string {
+	label := s.Name
 	switch s.Status {
+	case syncer.SpecOK:
+		label += fmt.Sprintf("  %d requests", len(s.Service.Operations))
 	case syncer.SpecSkipped:
-		return s.Name + " (skipped)  " + s.Rel
+		label += "  (skipped)"
 	case syncer.SpecDuplicate:
-		return s.Name + " (name taken)  " + s.Rel
+		label += "  (name taken)"
 	case syncer.SpecFailed:
-		return s.Name + " (failed)  " + s.Rel
+		label += "  (failed)"
 	}
-	return s.Name + "  " + s.Rel
+	return label + "  " + s.Repo + ":" + s.Rel
 }
 
 func (w *wizard) editServices() error {
@@ -519,90 +572,110 @@ func (w *wizard) editServices() error {
 		w.ui.Section("Services")
 		w.ui.Info("Each spec becomes a folder in the collection. The name is its identity and variable prefix.")
 		w.printSpecs(res, "")
+		repoErrors := 0
 		for _, e := range res.Errors {
 			if strings.HasPrefix(e, "repo ") {
 				w.ui.Fail("%s", brief(e))
+				repoErrors++
 			}
 		}
-		dups := 0
-		for _, s := range res.Specs {
+		specs := selectable(res)
+		if len(specs) == 0 {
+			switch {
+			case len(w.cfg.Repos) == 0:
+				w.ui.Warn("No repositories yet, so there are no services. Add one under Repositories.")
+			case repoErrors > 0:
+				w.ui.Warn("Fix the repositories above under Repositories, then the services show up here.")
+			default:
+				w.ui.Warn("The repositories hold no specs with requests. Check their spec patterns under Repositories.")
+			}
+			return nil
+		}
+		dups, def := 0, -1
+		labels := make([]string, 0, len(specs)+1)
+		for k, s := range specs {
+			labels = append(labels, specLabel(s))
 			if s.Status == syncer.SpecDuplicate {
 				dups++
+				if def < 0 {
+					def = k
+				}
 			}
 		}
 		if dups > 0 {
 			w.ui.Warn("Specs marked NAME TAKEN derive the same service name and will not sync. Rename one of them.")
 		}
-		specs := selectable(res)
-		if len(specs) == 0 {
-			return nil
-		}
-		def := 3
-		if dups > 0 {
+		if def < 0 {
 			def = 0
-		}
-		i, err := w.ui.Choose("Services", []string{"Rename a service", "Skip or include a spec", "Set the folder name shown in Bruno", "Done"}, def)
-		if err != nil {
-			return err
-		}
-		if i == 3 {
-			if dups == 0 {
-				return nil
-			}
-			ok, err := w.ui.Confirm("Some specs share a name and will not sync. Continue anyway?", false)
-			if err != nil || ok {
-				return err
-			}
-			continue
-		}
-		var labels []string
-		pick := -1
-		for k, s := range specs {
-			labels = append(labels, specLabel(s))
-			if pick < 0 && s.Status == syncer.SpecDuplicate {
-				pick = k
+			if w.setup {
+				def = len(specs) // the first pass just moves on
 			}
 		}
-		k, err := w.ui.Choose("Which spec?", append(labels, "Cancel"), pick)
+		k, err := w.ui.Choose(fmt.Sprintf("Pick a service to rename, skip or move (%d)", len(specs)), append(labels, "Done"), def)
 		if err != nil {
 			return err
 		}
 		if k == len(specs) {
-			continue
-		}
-		st := specs[k]
-		switch i {
-		case 0:
-			err = w.renameService(res, st)
-		case 1:
-			skip := st.Status != syncer.SpecSkipped
-			w.setOverride(st, func(o *config.Override) { o.Skip = skip })
-			if skip {
-				w.ui.OK("%s will be skipped", st.Rel)
-			} else {
-				w.ui.OK("%s will be synced again", st.Rel)
+			if dups == 0 {
+				return nil
 			}
-		case 2:
-			def := ""
-			if st.Service != nil {
-				def = st.Service.Folder
-			}
-			folder, err := w.ui.Ask("Folder name ('-' goes back to the spec title)", def)
-			if err != nil {
+			ok, err := w.ui.Confirm("Some specs share a name and will not sync. Continue anyway?", false)
+			if err != nil && !isBack(err) {
 				return err
 			}
-			if folder == "-" {
-				folder = ""
+			if ok {
+				return nil
 			}
-			if st.Service != nil && folder == st.Service.Title {
-				folder = ""
-			}
-			w.setOverride(st, func(o *config.Override) { o.Folder = folder })
+			continue
 		}
-		if err != nil {
+		if err := w.editService(res, specs[k]); err != nil && !isBack(err) {
 			return err
 		}
 	}
+}
+
+// editService offers what can be changed about one spec.
+func (w *wizard) editService(res *syncer.LoadResult, st syncer.SpecStatus) error {
+	folder := ""
+	if st.Service != nil {
+		folder = st.Service.Folder
+	}
+	skip := "Skip it: it is not synced and its folder is left alone"
+	if st.Status == syncer.SpecSkipped {
+		skip = "Include it again"
+	}
+	i, err := w.ui.Choose(st.Name+"  "+st.Repo+":"+st.Rel, []string{
+		"Rename (now " + st.Name + ", variables " + gen.VarPrefix(st.Name) + "host, ...)",
+		skip,
+		"Folder name shown in Bruno (now " + or(folder, st.Name) + ")",
+		"Back",
+	}, 0)
+	if err != nil {
+		return err
+	}
+	switch i {
+	case 0:
+		return w.renameService(res, st)
+	case 1:
+		skipped := st.Status != syncer.SpecSkipped
+		w.setOverride(st, func(o *config.Override) { o.Skip = skipped })
+		if skipped {
+			w.ui.OK("%s will be skipped", st.Rel)
+		} else {
+			w.ui.OK("%s will be synced again", st.Rel)
+		}
+	case 2:
+		v, err := w.ui.Ask("Folder name ('-' goes back to the spec title)", folder)
+		if err != nil {
+			return err
+		}
+		if v == "-" || (st.Service != nil && v == st.Service.Title) {
+			v = ""
+		}
+		w.setOverride(st, func(o *config.Override) { o.Folder = v })
+		w.ui.OK("folder name set")
+	}
+	return nil
 }
 
 func (w *wizard) renameService(res *syncer.LoadResult, st syncer.SpecStatus) error {
@@ -663,7 +736,7 @@ func (w *wizard) setOverride(st syncer.SpecStatus, edit func(*config.Override)) 
 func (w *wizard) editEnvironments() error {
 	for {
 		w.ui.Section("Environments")
-		w.ui.Info("Each becomes a Bruno environment that overrides the hosts and ports from the specs.")
+		w.ui.Info("Each becomes a Bruno environment that overrides the hosts and ports from the specs. Add as many as you need.")
 		if len(w.cfg.Environments) == 0 {
 			w.ui.Info("None yet. Without one, requests use the server URL of each spec.")
 		}
@@ -671,11 +744,16 @@ func (w *wizard) editEnvironments() error {
 			w.ui.OK("%s", describeEnv(e))
 		}
 		opts := []string{"Add an environment"}
+		def := 0
 		if len(w.cfg.Environments) > 0 {
 			opts = append(opts, "Change an environment", "Remove an environment")
+			def = 1
+			if w.setup {
+				def = 3 // Done
+			}
 		}
 		opts = append(opts, "Done")
-		i, err := w.ui.Choose("Environments", opts, len(opts)-1)
+		i, err := w.ui.Choose("Environments", opts, def)
 		if err != nil {
 			return err
 		}
@@ -684,7 +762,12 @@ func (w *wizard) editEnvironments() error {
 			return nil
 		case "Add an environment":
 			e := config.Environment{}
-			if err := w.editEnv(&e, -1); err != nil {
+			err := w.editEnv(&e, -1)
+			if isBack(err) {
+				w.ui.Info("Cancelled, no environment added.")
+				continue
+			}
+			if err != nil {
 				return err
 			}
 			w.cfg.Environments = append(w.cfg.Environments, e)
@@ -693,24 +776,45 @@ func (w *wizard) editEnvironments() error {
 			for _, e := range w.cfg.Environments {
 				names = append(names, e.Name)
 			}
-			k, err := w.ui.Choose("Which environment?", append(names, "Cancel"), len(names))
+			k, err := w.ui.Choose("Which environment?", append(names, "Cancel"), 0)
+			if isBack(err) || k == len(names) {
+				continue
+			}
 			if err != nil {
 				return err
 			}
-			if k == len(names) {
-				continue
-			}
 			if opts[i] == "Remove an environment" {
+				w.ui.OK("Removed %s", names[k])
 				w.cfg.Environments = append(w.cfg.Environments[:k], w.cfg.Environments[k+1:]...)
 				continue
 			}
-			e := w.cfg.Environments[k]
-			if err := w.editEnv(&e, k); err != nil {
+			// Edit a copy: the maps would otherwise change even when the
+			// edit is cancelled.
+			e := cloneEnv(w.cfg.Environments[k])
+			err = w.editEnv(&e, k)
+			if isBack(err) {
+				w.ui.Info("Cancelled, %s is unchanged.", names[k])
+				continue
+			}
+			if err != nil {
 				return err
 			}
 			w.cfg.Environments[k] = e
 		}
 	}
+}
+
+func cloneEnv(e config.Environment) config.Environment {
+	e.Defaults = maps.Clone(e.Defaults)
+	e.Variables = maps.Clone(e.Variables)
+	if e.Services != nil {
+		svc := make(map[string]map[string]string, len(e.Services))
+		for k, v := range e.Services {
+			svc[k] = maps.Clone(v)
+		}
+		e.Services = svc
+	}
+	return e
 }
 
 // editEnv edits e in place. index is its position, or -1 for a new one.
@@ -742,7 +846,7 @@ func (w *wizard) editEnv(e *config.Environment, index int) error {
 			w.ui.Item("%-24s %s", l.Service.Name, serverSummary(l))
 		}
 	}
-	w.ui.Info("Values for every service. Empty keeps the grey value, '-' clears it. {service} is the service name.")
+	w.ui.Info("Values for every service. Empty keeps the grey value, '-' clears it. {service} is the service name. Esc cancels this environment.")
 	// Only ask for what the services have: a spec URL without a port has no
 	// port variable, so a port default would do nothing for it.
 	keys := []string{"protocol", "host", "port"}
@@ -792,25 +896,34 @@ func (w *wizard) editEnv(e *config.Environment, index int) error {
 				names = append(names, label)
 			}
 			k, err := w.ui.Choose("Which service?", append(names, "Done"), len(names))
+			if isBack(err) || k == len(names) {
+				break
+			}
 			if err != nil {
 				return err
 			}
-			if k == len(names) {
-				break
-			}
 			svc := services[k].Service
-			own := e.Services[svc.Name]
+			own := maps.Clone(e.Services[svc.Name])
 			// baseUrl replaces the whole base URL, e.g. behind a gateway path.
 			varNames := []string{}
 			for _, v := range svc.Server.Vars {
 				varNames = append(varNames, v.Name)
 			}
+			cancelled := false
 			for _, n := range append(varNames, "baseUrl") {
 				val, err := w.askValue(svc.Name+" "+n, own[n], checkVar(n))
+				if isBack(err) {
+					cancelled = true
+					break
+				}
 				if err != nil {
 					return err
 				}
 				own = setOrDelete(own, n, val)
+			}
+			if cancelled {
+				w.ui.Info("Cancelled, %s keeps its values.", svc.Name)
+				continue
 			}
 			if e.Services == nil {
 				e.Services = map[string]map[string]string{}
@@ -915,6 +1028,9 @@ func (w *wizard) askValue(label, cur string, check prompt.Check) (string, error)
 
 func (w *wizard) editOutput() error {
 	w.ui.Section("Output")
+	if w.cfg.Output.Type != "" {
+		w.ui.Info("Now: %s", w.outputSummary())
+	}
 	cur := map[string]int{"": 0, config.OutputDir: 0, config.OutputZip: 1, config.OutputGit: 2}[w.cfg.Output.Type]
 	i, err := w.ui.Choose("Where should the collection go?", []string{
 		"A folder (" + or(w.cfg.Collection.Path, "./collection") + "), for local use",
@@ -1007,42 +1123,87 @@ func (w *wizard) editOutput() error {
 
 func (w *wizard) summary() {
 	c := w.cfg
-	w.ui.Section("Summary of " + filepath.Base(w.path))
-	w.ui.Item("Collection    %s in %s", or(c.Collection.Name, "APIs"), or(c.Collection.Path, "./collection"))
-	var repos []string
-	for _, r := range c.Repos {
-		repos = append(repos, config.RepoName(r))
+	title := "Configuration  " + filepath.Base(w.path)
+	if w.dirty() {
+		title += "  (unsaved changes)"
 	}
-	w.ui.Item("Repositories  %s", orNone(strings.Join(repos, ", ")))
-	if w.res != nil {
-		ok, problems := 0, 0
+	w.ui.Section(title)
+	w.ui.Field("Collection", or(c.Collection.Name, "APIs")+" in "+or(c.Collection.Path, "./collection"))
+
+	w.ui.Field("Repositories", countOrNone(len(c.Repos)))
+	for _, r := range c.Repos {
+		line := config.RepoName(r) + "  " + repoSource(r)
+		if len(r.Specs) > 0 {
+			line += "  specs " + strings.Join(r.Specs, ", ")
+		}
+		w.ui.Item("%s", line)
+	}
+
+	if w.res != nil && len(c.Repos) > 0 {
+		var ok []syncer.SpecStatus
+		requests, problems := 0, 0
 		for _, s := range w.res.Specs {
 			switch s.Status {
 			case syncer.SpecOK:
-				ok++
+				ok = append(ok, s)
+				requests += len(s.Service.Operations)
 			case syncer.SpecFailed, syncer.SpecDuplicate:
 				problems++
 			}
 		}
-		line := fmt.Sprintf("%d", ok)
+		line := fmt.Sprintf("%d with %d requests", len(ok), requests)
 		if problems > 0 {
 			line += fmt.Sprintf(", %d with problems (see Services)", problems)
 		}
-		w.ui.Item("Services      %s", line)
+		w.ui.Field("Services", line)
+		const maxShown = 12
+		for i, s := range ok {
+			if i == maxShown {
+				w.ui.Item("and %d more, see Services", len(ok)-maxShown)
+				break
+			}
+			w.ui.Item("%-24s %4d requests  %s:%s", s.Name, len(s.Service.Operations), s.Repo, s.Rel)
+		}
 	}
-	var envs []string
+
+	w.ui.Field("Environments", countOrNone(len(c.Environments)))
 	for _, e := range c.Environments {
-		envs = append(envs, e.Name)
+		w.ui.Item("%s", describeEnv(e))
 	}
-	w.ui.Item("Environments  %s", orNone(strings.Join(envs, ", ")))
+	w.ui.Field("Output", w.outputSummary())
+}
+
+func (w *wizard) outputSummary() string {
+	c := w.cfg
 	switch c.Output.Type {
 	case config.OutputZip:
-		w.ui.Item("Output        zip file %s", or(c.Output.Zip.Path, config.DefaultZipPath(or(c.Collection.Name, "APIs"))))
+		return "zip file " + or(c.Output.Zip.Path, config.DefaultZipPath(or(c.Collection.Name, "APIs")))
 	case config.OutputGit:
-		w.ui.Item("Output        git %s (%s)", c.Output.Git.URL, or(c.Output.Git.Branch, "default branch"))
-	default:
-		w.ui.Item("Output        folder %s", or(c.Collection.Path, "./collection"))
+		g := c.Output.Git
+		s := "git " + g.URL + ", branch " + or(g.Branch, "default") + ", folder " + or(g.Path, ".")
+		if !g.ShouldPush() {
+			s += ", commit without push"
+		}
+		return s
 	}
+	return "folder " + or(c.Collection.Path, "./collection")
+}
+
+// dirty tells whether anything changed since the config was opened or
+// last saved.
+func (w *wizard) dirty() bool {
+	if w.opened == nil {
+		return true
+	}
+	data, err := config.Marshal(w.cfg)
+	return err != nil || string(data) != string(w.opened)
+}
+
+func countOrNone(n int) string {
+	if n == 0 {
+		return "none"
+	}
+	return strconv.Itoa(n)
 }
 
 func (w *wizard) save() (bool, error) {
@@ -1074,7 +1235,7 @@ func (w *wizard) save() (bool, error) {
 		return false, err
 	}
 	w.ui.OK("Saved %s", w.path)
-	w.exists = true
+	w.exists, w.opened = true, data
 	return true, nil
 }
 
@@ -1093,8 +1254,6 @@ func or(s, def string) string {
 	}
 	return s
 }
-
-func orNone(s string) string { return or(s, "none") }
 
 func isGitURL(s string) bool {
 	return strings.HasPrefix(s, "git@") || strings.Contains(s, "://") || strings.HasSuffix(s, ".git")
