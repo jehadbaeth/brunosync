@@ -29,7 +29,7 @@ Then open the `collection` folder in Bruno (v3 or newer, which reads the OpenCol
 
 ### The wizard
 
-`brunosync init` asks for the collection name, the repositories (local folders or git URLs), then shows every spec it found with the service name, the number of requests and any problem, exactly as `sync` will see them. You can rename services (it insists when two specs end up with the same name), skip specs, set folder names, define environments with hosts and ports, and choose the output (folder, zip or git). It only ever writes `brunosync.yml`, so everything it does can also be done by hand.
+`brunosync init` asks for the collection name, the repositories (local folders or git URLs), then shows every spec it found with the service name, the number of requests and any problem, exactly as `sync` will see them. Every answer is checked as soon as you press Enter, with a ✓ or a ✗ right below it: folders must exist, git URLs are probed with `git ls-remote` using your credentials, branches must exist, a repository is cloned and scanned for specs right away (and if nothing matches, you're asked for file patterns, each one tried on the spot), service names must be valid and free, and hosts, ports and URLs are checked for the usual mistakes. Menus use the arrow keys, Enter keeps the grey default and Tab lets you edit it. You can rename services (it insists when two specs end up with the same name), skip specs, set folder names, define environments with hosts and ports, and choose the output (folder, zip or git). It only ever writes `brunosync.yml`, so everything it does can also be done by hand.
 
 `brunosync configure` opens the wizard on an existing config. Saving rewrites the file without its comments and keeps the previous version as `brunosync.yml.bak`. The wizard needs a terminal. In CI or with piped input it refuses to start, and `brunosync init` writes a commented template instead (also available with `init --starter`).
 
@@ -222,6 +222,7 @@ Latest results: [test/realworld/RESULTS.md](test/realworld/RESULTS.md). It runs 
 * If a request file already exists at a path brunosync wants to create and brunosync doesn't manage it, brunosync leaves it alone and reports it. Adopting an existing hand imported collection isn't supported yet, so start from a fresh folder.
 * Renaming a generated service or tag folder in Bruno makes the next sync create the folder again for new requests. Existing requests are followed.
 * Operations without an `operationId` work, but they're identified by method and path, so renaming the path loses that request's tests. brunosync warns for each one. `sync.requireOperationIds: true` makes it an error.
+* The wizard's terminal UI asks the terminal for its colors once at startup. Real terminals answer instantly. In a pseudo terminal that never answers (some CI log viewers, `script`), any brunosync command waits 5 seconds first; `TERM=dumb` avoids that.
 * Verified against Bruno's file library and CLI 4.3.0 (see below), not by clicking through the desktop app.
 
 ## Development
