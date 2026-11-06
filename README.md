@@ -20,17 +20,22 @@ That downloads the right binary for your machine from the latest GitHub release,
 
 ```sh
 mkdir api-collection && cd api-collection
-brunosync init            # writes brunosync.yml
-# edit brunosync.yml: point repos at your checkouts or git URLs
+brunosync init            # the setup wizard writes brunosync.yml and offers a first sync
 brunosync validate        # loads every spec, shows services and warnings, writes nothing
-brunosync sync            # creates ./collection
+brunosync sync            # creates or updates ./collection
 ```
 
 Then open the `collection` folder in Bruno (v3 or newer, which reads the OpenCollection YAML format). Run `brunosync sync` again whenever the specs change. `brunosync sync --dry-run` shows what would change first.
 
+### The wizard
+
+`brunosync init` asks for the collection name, the repositories (local folders or git URLs), then shows every spec it found with the service name, the number of requests and any problem, exactly as `sync` will see them. You can rename services (it insists when two specs end up with the same name), skip specs, set folder names, define environments with hosts and ports, and choose the output (folder, zip or git). It only ever writes `brunosync.yml`, so everything it does can also be done by hand.
+
+`brunosync configure` opens the wizard on an existing config. Saving rewrites the file without its comments and keeps the previous version as `brunosync.yml.bak`. The wizard needs a terminal. In CI or with piped input it refuses to start, and `brunosync init` writes a commented template instead (also available with `init --starter`).
+
 ## Config
 
-`brunosync init` writes a commented starter. The full reference is [`brunosync.config.example.yml`](brunosync.config.example.yml). A minimal one:
+The full reference is [`brunosync.config.example.yml`](brunosync.config.example.yml). A minimal one:
 
 ```yaml
 version: 1
@@ -171,7 +176,8 @@ Notes:
 ## Commands
 
 ```
-brunosync init       write a starter brunosync.yml
+brunosync init       create brunosync.yml with the wizard (--starter: a commented template)
+brunosync configure  change brunosync.yml with the wizard
 brunosync validate   load every spec and report problems, writes nothing
 brunosync sync       generate and merge into the collection
 brunosync version

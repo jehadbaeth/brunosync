@@ -97,19 +97,18 @@ A repo or spec that fails to load (missing directory, clone error, unresolved `$
 
 ### 4.5 Variables
 
-From the first `servers` entry: `<service>_protocol`, `<service>_host`, `<service>_port` (when the URL has a port), any other server variables, and `<service>_baseUrl` composed from them (fact 5). They live in `opencollection.yml` under `request.variables` and are merged three way against the values stored in the manifest. Environments are left to the user, or to the later wizard, and override these values (fact 5).
+From the first `servers` entry: `<service>_protocol`, `<service>_host`, `<service>_port` (when the URL has a port), any other server variables, and `<service>_baseUrl` composed from them (fact 5). They live in `opencollection.yml` under `request.variables` and are merged three way against the values stored in the manifest. Environments come from the `environments` section of the config and are written to `environments/<name>.yml`. They override these values (fact 5). Only the variables brunosync writes are managed, merged three way against base values in the manifest. Variables people add in Bruno, and variables marked secret, are never touched.
 
 ### 4.6 Config first
 
-`brunosync.yml` is the source of truth. `brunosync init` writes a starter. The planned wizard will only write this file.
+`brunosync.yml` is the source of truth. The wizard (`brunosync init`, `brunosync configure`) only writes this file. It edits the file as decoded, without defaults, so saving never bakes defaults in, and it shows services through the same loader `sync` uses. It needs a terminal and refuses to start otherwise, so CI never waits for input.
 
 ## 5. Roadmap
 
-1. **Setup wizard** (`brunosync init --interactive`): pick repos, review discovered services and names, define environments and generate Bruno environment files with per service host and port.
-2. **Merge request mode** for `git` output: push to a branch and open a merge/pull request with the report instead of pushing to the branch directly. `zip` and `git` outputs exist since v0.2 (see README).
-3. **GitLab artifact source**, if CI bundling is wanted: `source: gitlab-artifact` reading pre bundled specs instead of cloning.
-4. **`brunosync status`**: list requests whose owned fields diverge from the spec on purpose (resolved conflicts), so divergence stays visible after the one time report.
-5. **Adoption** of an existing hand imported collection, by matching files on method and URL path.
+1. **Merge request mode** for `git` output: push to a branch and open a merge/pull request with the report instead of pushing to the branch directly. `zip` and `git` outputs exist since v0.2 (see README).
+2. **GitLab artifact source**, if CI bundling is wanted: `source: gitlab-artifact` reading pre bundled specs instead of cloning.
+3. **`brunosync status`**: list requests whose owned fields diverge from the spec on purpose (resolved conflicts), so divergence stays visible after the one time report.
+4. **Adoption** of an existing hand imported collection, by matching files on method and URL path.
 
 ## 6. Out of scope for now
 
