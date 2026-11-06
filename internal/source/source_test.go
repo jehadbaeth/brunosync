@@ -97,3 +97,105 @@ func TestProbeAndHasRef(t *testing.T) {
 		t.Error("probing a missing repo must fail")
 	}
 }
+
+func TestIsRemoteGit(t *testing.T) {
+	for s, want := range map[string]bool{
+		"git@gitlab.example.com:group/repo.git": true,
+		"gitlab.example.com:group/repo":         true,
+		"https://gitlab.example.com/g/r.git":    true,
+		"ssh://git@host/g/r.git":                true,
+		"file:///srv/repo.git":                  false,
+		"/srv/repo.git":                         false,
+		"~/code/orders":                         false,
+		"../orders":                             false,
+		"./orders":                              false,
+		"orders":                                false,
+		"code/orders":                           false,
+	} {
+		if got := IsRemoteGit(s); got != want {
+			t.Errorf("IsRemoteGit(%q) = %v", s, got)
+		}
+	}
+}
+
+// gitRepo makes a repository with openapi.yml committed on main and a
+// different openapi.yml on branch release, then checks out main and leaves
+// an uncommitted file.
+func gitRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "--quiet", "--initial-branch=main")
+	write("openapi.yml", "main\n")
+	run("add", ".")
+	run("commit", "--quiet", "-m", "main")
+	run("checkout", "--quiet", "-b", "release")
+	write("openapi.yml", "release\n")
+	run("commit", "--quiet", "-am", "release")
+	run("checkout", "--quiet", "main")
+	write("scratch.txt", "not committed\n")
+	return dir
+}
+
+func TestInspect(t *testing.T) {
+	dir := gitRepo(t)
+	c := Inspect(dir)
+	if !c.Repo || c.Bare || !c.Root || c.Branch != "main" || c.Dirty != 1 {
+		t.Errorf("checkout = %+v", c)
+	}
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if c := Inspect(sub); !c.Repo || c.Root {
+		t.Errorf("subfolder = %+v", c)
+	}
+	if c := Inspect(t.TempDir()); c.Repo {
+		t.Errorf("plain folder = %+v", c)
+	}
+}
+
+// A local repository as a git source is read at its branch, relative to the
+// config file, without touching the working copy.
+func TestResolveLocalGitAtABranch(t *testing.T) {
+	repo := gitRepo(t)
+	cfgDir := t.TempDir()
+	rel, err := filepath.Rel(cfgDir, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Dir: cfgDir}
+	r := config.Repo{Name: "local", Git: rel, Ref: "release"}
+	opt := Options{CacheDir: t.TempDir()}
+	for range 2 { // clone, then update
+		dir, err := Resolve(cfg, r, opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(dir, "openapi.yml")); string(b) != "release\n" {
+			t.Errorf("read %q, want the release branch", b)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "openapi.yml")); string(b) != "main\n" {
+		t.Error("working copy changed")
+	}
+	if !Exists(filepath.Join(repo, "scratch.txt")) {
+		t.Error("uncommitted file gone")
+	}
+}

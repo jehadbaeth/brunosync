@@ -326,8 +326,10 @@ func (w *wizard) editRepos() error {
 }
 
 // checkSource validates a repo answer the moment it is given: a folder must
-// exist, a git URL must answer with your credentials.
-func (w *wizard) checkSource(s string) (string, error) {
+// exist (and is described when it is a git checkout), a git URL must answer
+// with your credentials.
+func (w *wizard) checkSource(answer string) (string, error) {
+	s := cleanPath(answer)
 	if s == "" {
 		return "", errors.New("enter a folder or a git URL")
 	}
@@ -335,6 +337,9 @@ func (w *wizard) checkSource(s string) (string, error) {
 		if r.Path == s || r.Git == s {
 			return "", fmt.Errorf("%s is already added", s)
 		}
+	}
+	if dir := w.cfg.Abs(s); isDir(dir) {
+		return describeCheckout(source.Inspect(dir)), nil
 	}
 	if isGitURL(s) {
 		if w.offline {
@@ -349,42 +354,68 @@ func (w *wizard) checkSource(s string) (string, error) {
 		}
 		return "reachable, default branch " + branch, nil
 	}
-	st, err := os.Stat(w.cfg.Abs(s))
-	if err != nil || !st.IsDir() {
-		return "", fmt.Errorf("no folder %s (relative paths start at %s)", s, w.cfg.Dir)
+	return "", fmt.Errorf("no folder %s (relative paths start at %s)", s, w.cfg.Dir)
+}
+
+func describeCheckout(c source.Checkout) string {
+	switch {
+	case c.Bare:
+		return "bare git repository, read at a branch or tag"
+	case !c.Repo:
+		return "folder found"
 	}
-	return "folder found", nil
+	msg := "folder found, git checkout"
+	if c.Branch != "" {
+		msg += " on " + c.Branch
+	}
+	if c.Dirty > 0 {
+		msg += fmt.Sprintf(", %d uncommitted change(s)", c.Dirty)
+	}
+	if !c.Root {
+		msg += ", a subfolder of the repository"
+	}
+	return msg
 }
 
 func (w *wizard) addRepo() error {
-	src, err := w.ui.AskValid("Local folder or git URL (git@host:group/repo.git)", "", w.checkSource)
+	answer, err := w.ui.AskValid("Folder on this machine or git URL (~/code/orders, git@host:group/repo.git)", "", w.checkSource)
 	if err != nil {
 		return err
 	}
+	src := cleanPath(answer)
 	var r config.Repo
-	if isGitURL(src) {
-		r.Git = src
-		r.Ref, err = w.ui.AskValid("Branch or tag (empty for the default branch)", "", func(ref string) (string, error) {
-			if ref == "" {
-				return "", nil
-			}
-			if w.offline {
-				return "offline, not checked", nil
-			}
-			ok, err := source.HasRef(src, ref)
+	switch dir := w.cfg.Abs(src); {
+	case isDir(dir):
+		r.Path = src
+		c := source.Inspect(dir)
+		useGit := c.Bare
+		if c.Repo && c.Root && !c.Bare {
+			// A checkout can be read two ways: what is on disk right now,
+			// or what is committed on a branch.
+			i, err := w.ui.Choose("What should brunosync read from this repository?", []string{
+				"The files in the folder as they are now (uncommitted changes included)",
+				"A branch or tag (read from git, your folder is not touched)",
+			}, 0)
 			if err != nil {
-				return "", err
+				return err
 			}
-			if !ok {
-				return "", fmt.Errorf("no branch or tag %s in %s", ref, src)
+			useGit = i == 1
+		}
+		if useGit {
+			r.Path, r.Git = "", src
+			current := "the default branch"
+			if c.Branch != "" {
+				current = "the checked out branch, " + c.Branch
 			}
-			return "found", nil
-		})
-		if err != nil {
+			if r.Ref, err = w.askRef(dir, "Branch or tag (empty for "+current+")"); err != nil {
+				return err
+			}
+		}
+	default:
+		r.Git = src
+		if r.Ref, err = w.askRef(src, "Branch or tag (empty for the default branch)"); err != nil {
 			return err
 		}
-	} else {
-		r.Path = src
 	}
 	taken := map[string]bool{}
 	for _, o := range w.cfg.Repos {
@@ -404,6 +435,47 @@ func (w *wizard) addRepo() error {
 	}
 	w.cfg.Repos = append(w.cfg.Repos, r)
 	return w.scanRepo(len(w.cfg.Repos) - 1)
+}
+
+// askRef asks for a branch or tag of url (a git URL or a local repository)
+// and checks that it exists.
+func (w *wizard) askRef(url, label string) (string, error) {
+	return w.ui.AskValid(label, "", func(ref string) (string, error) {
+		if ref == "" {
+			return "", nil
+		}
+		if w.offline && source.IsRemoteGit(url) {
+			return "offline, not checked", nil
+		}
+		ok, err := source.HasRef(url, ref)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("no branch or tag %s in %s", ref, url)
+		}
+		return "found", nil
+	})
+}
+
+// cleanPath undoes what terminals add when a folder is dragged in: quotes
+// around it and backslashes before spaces.
+func cleanPath(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0] {
+		s = s[1 : len(s)-1]
+	} else if !strings.Contains(s, "://") && !strings.HasPrefix(s, "git@") {
+		s = strings.ReplaceAll(s, "\\ ", " ")
+	}
+	if s == "~" {
+		s = "~/"
+	}
+	return s
+}
+
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }
 
 // scanRepo looks for specs in a newly added repo and reports them. When none
@@ -1256,7 +1328,7 @@ func or(s, def string) string {
 }
 
 func isGitURL(s string) bool {
-	return strings.HasPrefix(s, "git@") || strings.Contains(s, "://") || strings.HasSuffix(s, ".git")
+	return source.IsRemoteGit(s) || strings.HasPrefix(s, "file://")
 }
 
 func repoSource(r config.Repo) string {

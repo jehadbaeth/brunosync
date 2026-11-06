@@ -304,3 +304,65 @@ func TestSummaryShowsTheCurrentConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"  '/Users/me/My Repos/orders'  ": "/Users/me/My Repos/orders",
+		`"/tmp/x"`:                        "/tmp/x",
+		`/Users/me/My\ Repos/orders`:      "/Users/me/My Repos/orders",
+		"~":                               "~/",
+		"git@host:g/r.git":                "git@host:g/r.git",
+	} {
+		if got := cleanPath(in); got != want {
+			t.Errorf("cleanPath(%q) = %q", in, got)
+		}
+	}
+}
+
+// A local checkout can be read at a branch instead of as it is on disk.
+func TestLocalRepoAtABranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := filepath.Join(t.TempDir(), "orders api") // a space, as dragged in
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "--quiet", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(repo, "openapi.yml"), []byte(miniSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "--quiet", "-m", "spec")
+	git("branch", "release")
+	t.Setenv("BRUNOSYNC_CACHE", t.TempDir())
+
+	path := filepath.Join(t.TempDir(), "brunosync.yml")
+	_, out := runWizard(t, path, script(
+		"", "",
+		"'"+repo+"'", // quoted, as a terminal pastes a dragged folder
+		"2",          // read a branch
+		"nope", "release",
+		"3", "", "2", "", "", "n",
+	))
+	for _, want := range []string{"git checkout on main", "✗ no branch or tag nope", "✓ found", "orders-api                  1 requests"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output misses %q:\n%s", want, out)
+		}
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Repos[0]; r.Git != repo || r.Ref != "release" || r.Path != "" {
+		t.Errorf("repo = %+v", r)
+	}
+}

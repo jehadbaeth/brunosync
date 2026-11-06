@@ -37,6 +37,12 @@ repos:
   # their schemas still arrive through the $refs of the other specs.
   - path: ../backend
 
+  # A repository on this machine, read at a branch or tag instead of as the
+  # files are on disk. Your working copy, uncommitted changes and checked out
+  # branch are not touched. Relative paths start at this file.
+  - git: ../orders-service
+    ref: release
+
   # A remote repo, cloned into ~/Library/Caches/brunosync (macOS) or
   # ~/.cache/brunosync (Linux) with your normal git credentials.
   - git: git@gitlab.example.com:platform/flight-dynamics.git

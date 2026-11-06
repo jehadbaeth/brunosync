@@ -55,7 +55,70 @@ func Resolve(cfg *config.Config, r config.Repo, opt Options) (string, error) {
 		}
 		return dir, nil
 	}
+	if !IsRemoteGit(r.Git) {
+		// A git repository on this machine: relative to the config file
+		// like every other path, and cached under its absolute path.
+		r.Git = cfg.Abs(r.Git)
+	}
 	return syncGit(r, opt)
+}
+
+// IsRemoteGit tells a git URL (https://, ssh://, git@host:group/repo) from
+// a path on this machine.
+func IsRemoteGit(s string) bool {
+	if strings.HasPrefix(s, "file://") {
+		return false
+	}
+	if strings.Contains(s, "://") {
+		return true
+	}
+	if filepath.IsAbs(s) || strings.HasPrefix(s, "~") || strings.HasPrefix(s, ".") {
+		return false
+	}
+	// scp style host:path, with the colon before any slash.
+	colon, slash := strings.Index(s, ":"), strings.Index(s, "/")
+	return colon > 0 && (slash < 0 || colon < slash)
+}
+
+// Checkout describes a folder on this machine.
+type Checkout struct {
+	Repo   bool   // inside a git working tree or a bare repository
+	Bare   bool   // a bare repository: there are no files to read, only refs
+	Root   bool   // the folder is the top of the working tree
+	Branch string // checked out branch, empty when detached
+	Dirty  int    // files with uncommitted changes
+}
+
+// Inspect looks at a local folder with git. A folder that is not a
+// repository, or a machine without git, gives the zero Checkout.
+func Inspect(dir string) Checkout {
+	var c Checkout
+	out, err := gitOutput("-C", dir, "rev-parse", "--is-bare-repository", "--show-toplevel")
+	if err != nil {
+		return c
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	c.Repo = true
+	if lines[0] == "true" {
+		c.Bare = true
+		return c
+	}
+	if len(lines) > 1 {
+		top, err1 := filepath.EvalSymlinks(lines[1])
+		here, err2 := filepath.EvalSymlinks(dir)
+		c.Root = err1 == nil && err2 == nil && filepath.Clean(top) == filepath.Clean(here)
+	}
+	if b, err := gitOutput("-C", dir, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		c.Branch = strings.TrimSpace(b)
+	}
+	if st, err := gitOutput("-C", dir, "status", "--porcelain"); err == nil {
+		for _, l := range strings.Split(st, "\n") {
+			if strings.TrimSpace(l) != "" {
+				c.Dirty++
+			}
+		}
+	}
+	return c
 }
 
 func cacheRoot(opt Options) (string, error) {

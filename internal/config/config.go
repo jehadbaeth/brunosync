@@ -376,7 +376,7 @@ func repoNameFrom(r *Repo) string {
 		src = r.Git
 	}
 	src = strings.TrimSuffix(strings.TrimRight(src, "/"), ".git")
-	if i := strings.LastIndexAny(src, "/:"); i >= 0 {
+	if i := strings.LastIndexAny(src, `/:\`); i >= 0 {
 		src = src[i+1:]
 	}
 	if src == "" || src == "." {

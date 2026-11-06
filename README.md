@@ -43,10 +43,14 @@ collection:
   path: ./collection
   name: Platform APIs
 repos:
-  - path: ../backend
+  - path: ../backend                 # a folder on this machine, as it is on disk
+  - git: ../orders-service           # a repository on this machine, at a branch
+    ref: release
   - git: git@gitlab.example.com:platform/flight-dynamics.git
     ref: main
 ```
+
+A repository can come from three places. `path:` reads a folder on this machine exactly as it is, uncommitted changes included, which is what you want while working on a spec. `git:` with a path reads a local repository at a branch or tag without touching your working copy. `git:` with a URL clones it with your own credentials. Relative paths start at the config file and `~/` works. The wizard asks which of the two you want when you give it a git checkout, and accepts folders dragged into the terminal.
 
 Every `openapi.yml` / `openapi.yaml` in a repo is picked up. Specs without any paths (your `common` modules) are skipped on their own, and their schemas still arrive through the `$ref`s of the specs that use them. The service name comes from the folder (`orders-service/src/main/resources/openapi.yml` becomes `orders-service`). Use `overrides` in the config when that guess is wrong.
 
