@@ -718,20 +718,21 @@ func (w *wizard) printSpecs(res *syncer.LoadResult, repo string) {
 	}
 }
 
-// specLabel is a menu option for a spec, ending in a colored status.
+// specLabel is a menu option for a spec: name, colored status, location.
+// The status comes before the path so narrow terminals never cut it off.
 func (w *wizard) specLabel(s syncer.SpecStatus) string {
-	label := fmt.Sprintf("%-24s %s:%s  ", s.Name, s.Repo, s.Rel)
+	kind, status := prompt.KindDim, ""
 	switch s.Status {
 	case syncer.SpecOK:
-		return label + w.ui.Badge(prompt.KindOK, fmt.Sprintf("✓ included, %d requests", len(s.Service.Operations)))
+		kind, status = prompt.KindOK, fmt.Sprintf("✓ included, %d requests", len(s.Service.Operations))
 	case syncer.SpecSkipped:
-		return label + w.ui.Badge(prompt.KindWarn, "○ skipped")
+		kind, status = prompt.KindWarn, "○ skipped"
 	case syncer.SpecDuplicate:
-		return label + w.ui.Badge(prompt.KindErr, "⚠ name taken, not synced")
+		kind, status = prompt.KindErr, "⚠ name taken, not synced"
 	case syncer.SpecFailed:
-		return label + w.ui.Badge(prompt.KindErr, "✗ failed to load")
+		kind, status = prompt.KindErr, "✗ failed to load"
 	}
-	return label
+	return fmt.Sprintf("%-24s ", s.Name) + w.ui.Badge(kind, fmt.Sprintf("%-26s", status)) + " " + s.Repo + ":" + s.Rel
 }
 
 func (w *wizard) editServices() error {
