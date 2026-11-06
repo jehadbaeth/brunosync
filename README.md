@@ -69,7 +69,27 @@ orders_service_port     = 8081
 orders_service_baseUrl  = {{orders_service_protocol}}://{{orders_service_host}}:{{orders_service_port}}/orders
 ```
 
-Requests use `{{orders_service_baseUrl}}/orders/:orderId`. To point at another machine, **create a Bruno environment and set `orders_service_host` (or port, protocol) there.** Environment variables beat collection variables in Bruno, and brunosync never touches environments. If you edit the collection variable itself instead, brunosync keeps your value, but you'll get a conflict when the spec changes it.
+Requests use `{{orders_service_baseUrl}}/orders/:orderId`. To point at another machine, set `orders_service_host` (or port, protocol) in a Bruno environment. Environment variables beat collection variables in Bruno. If you edit the collection variable itself instead, brunosync keeps your value, but you'll get a conflict when the spec changes it.
+
+### Environments
+
+Environments can come from the config, so the whole team gets the same `local`, `staging` and `prod` without clicking them together:
+
+```yaml
+environments:
+  - name: local                  # empty: the spec defaults apply
+  - name: staging
+    defaults:                    # every service that has the variable
+      protocol: https
+      host: "{service}.staging.example.com"
+    services:                    # per service, wins over defaults
+      orders-service: { port: "8443" }
+      billing: { baseUrl: "https://gateway.staging.example.com/billing" }
+    variables:                   # extra variables, written as they are
+      tenant: okapi
+```
+
+Each one becomes `environments/<name>.yml` in the collection. The keys are the variable names without the service prefix: `protocol`, `host`, `port`, any other server variable of the spec, and `baseUrl` to replace the whole base URL (handy behind a gateway). brunosync only manages the variables it writes. Tokens and other variables you add in Bruno stay, a variable you mark as secret is never touched, and a managed value you change in Bruno is kept (with a conflict in the report if the config changes it too). An environment you remove from the config is deleted if nobody changed it, and kept with a warning otherwise. `brunosync validate` warns about service names or keys that match nothing.
 
 ### Example bodies
 
@@ -196,7 +216,6 @@ Latest results: [test/realworld/RESULTS.md](test/realworld/RESULTS.md). It runs 
 * If a request file already exists at a path brunosync wants to create and brunosync doesn't manage it, brunosync leaves it alone and reports it. Adopting an existing hand imported collection isn't supported yet, so start from a fresh folder.
 * Renaming a generated service or tag folder in Bruno makes the next sync create the folder again for new requests. Existing requests are followed.
 * Operations without an `operationId` work, but they're identified by method and path, so renaming the path loses that request's tests. brunosync warns for each one. `sync.requireOperationIds: true` makes it an error.
-* Environments are not generated yet. That comes with the setup wizard.
 * Verified against Bruno's file library and CLI 4.3.0 (see below), not by clicking through the desktop app.
 
 ## Development

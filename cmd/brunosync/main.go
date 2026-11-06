@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/jehadbaeth/brunosync/internal/config"
+	"github.com/jehadbaeth/brunosync/internal/gen"
 	"github.com/jehadbaeth/brunosync/internal/output"
 	"github.com/jehadbaeth/brunosync/internal/source"
 	"github.com/jehadbaeth/brunosync/internal/syncer"
@@ -229,6 +230,23 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%-24s %3d operations  %-28s %s\n", s.Name, len(s.Operations), "\""+s.Folder+"\"", s.Source)
 		for _, w := range s.Warnings {
 			fmt.Fprintf(stdout, "    warning: %s\n", w)
+		}
+	}
+	if len(cfg.Environments) > 0 {
+		var outputs []gen.Output
+		for _, l := range res.Services {
+			outputs = append(outputs, gen.Service(l.Service, gen.FileSafe(l.Service.Name)))
+		}
+		fmt.Fprintln(stdout, "\nEnvironments:")
+		for _, env := range cfg.Environments {
+			vars, warnings := syncer.EnvVariables(env, outputs, res.FailedServices)
+			fmt.Fprintf(stdout, "  %-22s %3d variables\n", env.Name, len(vars))
+			if len(res.Errors) > 0 {
+				continue // missing services are expected while specs fail to load
+			}
+			for _, w := range warnings {
+				fmt.Fprintf(stdout, "    warning: %s\n", w)
+			}
 		}
 	}
 	if len(res.Skipped) > 0 {

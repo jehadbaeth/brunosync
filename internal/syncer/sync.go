@@ -221,6 +221,9 @@ func Run(cfg *config.Config, opt Options) (*Report, error) {
 	if err := r.syncCollectionFile(outputs); err != nil {
 		return r.report, err
 	}
+	if err := r.syncEnvironments(outputs); err != nil {
+		return r.report, err
+	}
 	if err := r.write(StateDir+"/manifest.json", r.next.encode(), false); err != nil {
 		return r.report, err
 	}

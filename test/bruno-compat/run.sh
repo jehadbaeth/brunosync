@@ -29,6 +29,11 @@ version: 1
 collection:
   path: ./collection
   name: Compat
+environments:
+  - name: staging
+    defaults: { host: 127.0.0.1 }
+    services:
+      orders-service: { port: "8082" }
 repos:
   - path: $root/test/fixtures/sample-repo
 EOF
@@ -74,4 +79,17 @@ if grep -q '.brunosync' "$work/bru.log"; then
 fi
 requests=$(wc -l <"$work/echo.log" | tr -d ' ')
 echo "  $requests requests received"
+
+echo "== bru run --env staging (environment overrides the orders port)"
+: >"$work/echo.log"
+(cd "$work/collection" && "$here/node_modules/.bin/bru" run -r --env staging >"$work/bru-env.log" 2>&1) || {
+	cat "$work/bru-env.log"
+	echo "bru run --env staging failed"
+	exit 1
+}
+expect '"port":8082,"method":"[A-Z]*","url":"/orders' "orders requests follow the staging port"
+if grep -q '"port":8081' "$work/echo.log"; then
+	echo "  FAIL: a request still went to the spec port 8081"
+	fail=1
+fi
 exit $fail

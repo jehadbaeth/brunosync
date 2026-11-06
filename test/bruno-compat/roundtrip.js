@@ -27,6 +27,7 @@ let n = 0, failed = 0;
     try {
       let saved;
       if (e.name === 'opencollection.yml') saved = src; // collection settings: not merged per field
+      else if (path.basename(path.dirname(p)) === 'environments') saved = fsx.stringifyEnvironment(fsx.parseEnvironment(src, { format: 'yml' }), { format: 'yml' });
       else if (e.name === 'folder.yml') saved = fsx.stringifyFolder(fsx.parseFolder(src, { format: 'yml' }), { format: 'yml' });
       else saved = fsx.stringifyRequest(fsx.parseRequest(src, { format: 'yml' }), { format: 'yml' });
       fs.writeFileSync(target, saved);

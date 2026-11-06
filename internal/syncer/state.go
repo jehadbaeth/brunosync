@@ -24,6 +24,9 @@ type Manifest struct {
 	Requests  map[string]RequestState `json:"requests"`
 	Variables map[string]string       `json:"variables"` // base values of managed collection variables
 	Folders   []string                `json:"folders"`   // folder dirs brunosync created
+	// Environments holds the base values of managed environment variables,
+	// keyed by environment name, then variable name.
+	Environments map[string]map[string]string `json:"environments,omitempty"`
 }
 
 // ServiceState describes a synced service.
@@ -43,10 +46,11 @@ type RequestState struct {
 
 func newManifest() *Manifest {
 	return &Manifest{
-		Version:   1,
-		Services:  map[string]ServiceState{},
-		Requests:  map[string]RequestState{},
-		Variables: map[string]string{},
+		Version:      1,
+		Services:     map[string]ServiceState{},
+		Requests:     map[string]RequestState{},
+		Variables:    map[string]string{},
+		Environments: map[string]map[string]string{},
 	}
 }
 
@@ -72,6 +76,9 @@ func loadManifest(root string) (*Manifest, error) {
 	}
 	if m.Variables == nil {
 		m.Variables = map[string]string{}
+	}
+	if m.Environments == nil {
+		m.Environments = map[string]map[string]string{}
 	}
 	return m, nil
 }
