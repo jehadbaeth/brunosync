@@ -3,6 +3,7 @@
 package source
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 
@@ -259,3 +261,99 @@ func Exists(p string) bool {
 }
 
 var _ fs.FS = os.DirFS(".")
+
+// probeTimeout bounds the network checks the wizard runs while you type.
+const probeTimeout = 45 * time.Second
+
+// Probe checks that a git URL is reachable with the current credentials and
+// returns its default branch ("" for an empty repository).
+func Probe(url string) (string, error) {
+	out, err := gitOutput("ls-remote", "--symref", url, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if rest, ok := strings.CutPrefix(line, "ref: refs/heads/"); ok {
+			branch, _, _ := strings.Cut(rest, "\t")
+			return branch, nil
+		}
+	}
+	return "", nil
+}
+
+// HasRef reports whether a branch or tag exists in a git repository.
+func HasRef(url, ref string) (bool, error) {
+	out, err := gitOutput("ls-remote", "--heads", "--tags", url, ref)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		_, name, ok := strings.Cut(line, "\t")
+		if ok && (name == "refs/heads/"+ref || name == "refs/tags/"+ref) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func gitOutput(args ...string) (string, error) {
+	if _, err := exec.LookPath("git"); err != nil {
+		return "", fmt.Errorf("git is not installed or not on PATH")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND="+sshCommand())
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("no answer after %s", probeTimeout)
+	}
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		msg = lastLine(msg)
+		if strings.Contains(msg, "Host key verification failed") {
+			msg += " (first connection to this host: run ssh -T once to accept its key, e.g. ssh -T " + sshHost(args[len(args)-2:]) + ")"
+		}
+		return "", fmt.Errorf("%s", msg)
+	}
+	return string(out), nil
+}
+
+// sshCommand keeps ssh from asking questions (host keys, passwords) that
+// nobody can answer while the wizard owns the terminal.
+func sshCommand() string {
+	if c := os.Getenv("GIT_SSH_COMMAND"); c != "" {
+		return c
+	}
+	return "ssh -o BatchMode=yes"
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" && !strings.HasPrefix(l, "fatal: Could not read from remote repository") && !strings.HasPrefix(l, "Please make sure you have") && !strings.HasPrefix(l, "and the repository exists") {
+			return strings.TrimPrefix(l, "fatal: ")
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+// sshHost picks user@host out of the URL among the git arguments.
+func sshHost(args []string) string {
+	for _, a := range args {
+		if user, rest, ok := strings.Cut(a, "@"); ok && !strings.Contains(user, "/") {
+			host, _, _ := strings.Cut(rest, ":")
+			return user + "@" + host
+		}
+		if after, ok := strings.CutPrefix(a, "ssh://"); ok {
+			host, _, _ := strings.Cut(after, "/")
+			return host
+		}
+	}
+	return "git@<host>"
+}

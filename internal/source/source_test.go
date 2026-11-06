@@ -2,6 +2,7 @@ package source
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,5 +65,35 @@ func TestDiscover(t *testing.T) {
 	r.Overrides = map[string]config.Override{"does/not/exist.yml": {Skip: true}}
 	if _, err := Discover(r, dir); err == nil {
 		t.Error("an override that matches nothing should be an error (typo protection)")
+	}
+}
+
+func TestProbeAndHasRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "--quiet", "--initial-branch=trunk")
+	run("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "x")
+	run("tag", "v1")
+
+	if b, err := Probe(dir); err != nil || b != "trunk" {
+		t.Fatalf("Probe = %q, %v", b, err)
+	}
+	for ref, want := range map[string]bool{"trunk": true, "v1": true, "main": false} {
+		if ok, err := HasRef(dir, ref); err != nil || ok != want {
+			t.Errorf("HasRef(%s) = %v, %v", ref, ok, err)
+		}
+	}
+	if _, err := Probe(filepath.Join(dir, "missing")); err == nil {
+		t.Error("probing a missing repo must fail")
 	}
 }
