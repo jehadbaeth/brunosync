@@ -313,7 +313,13 @@ func cmdConfigure(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 }
 
 func runWizard(path string, offline bool, stdin io.Reader, stdout, stderr io.Writer) int {
-	res, err := wizard.Run(wizard.Options{In: stdin, Out: stdout, Path: path, Offline: offline})
+	opt := wizard.Options{In: stdin, Out: stdout, Path: path, Offline: offline}
+	if isTerminal(stdin) && isTerminal(stdout) {
+		if _, ok := stdin.(*os.File); ok {
+			opt.UI = prompt.NewTTY(stdin, stdout)
+		}
+	}
+	res, err := wizard.Run(opt)
 	if errors.Is(err, prompt.ErrAborted) {
 		return exitError
 	}
@@ -342,7 +348,7 @@ func configArg(path string) string {
 // isTerminal reports whether the wizard can talk to a person. Readers that
 // are not files (tests) count as interactive; pipes and /dev/null do not, so
 // CI never waits for an answer.
-var isTerminal = func(r io.Reader) bool {
+var isTerminal = func(r any) bool {
 	f, ok := r.(*os.File)
 	if !ok {
 		return true
