@@ -10,7 +10,8 @@ import (
 )
 
 // Plain is the line based UI: one answer per line, numbers for menus, no
-// colors. Tests and scripted input use it.
+// colors. Tests and scripted input use it. An answer of "<" goes back, like
+// Esc in the terminal UI.
 type Plain struct {
 	printer
 	in *bufio.Reader
@@ -50,6 +51,9 @@ func (p *Plain) AskValid(label, def string, check Check) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if s == backToken {
+			return "", ErrBack
+		}
 		if s == "" {
 			s = def
 		}
@@ -79,6 +83,9 @@ func (p *Plain) Confirm(label string, def bool) (bool, error) {
 		s, err := p.readLine()
 		if err != nil {
 			return false, err
+		}
+		if s == backToken {
+			return false, ErrBack
 		}
 		switch strings.ToLower(s) {
 		case "":

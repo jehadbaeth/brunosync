@@ -18,6 +18,13 @@ import (
 // ErrAborted is returned when the user quits (Ctrl+C) or the input ends.
 var ErrAborted = errors.New("aborted")
 
+// ErrBack is returned when the user presses Esc (or answers "<" in the plain
+// UI): leave this question and go back one step, changing nothing.
+var ErrBack = errors.New("back")
+
+// backToken is the answer that means Esc in the plain UI.
+const backToken = "<"
+
 // Check validates an answer. On success it may return a short message that
 // is shown next to a green check mark, for example "found 3 specs".
 type Check func(answer string) (string, error)
@@ -44,6 +51,7 @@ type UI interface {
 	Fail(format string, a ...any)
 	Info(format string, a ...any)
 	Item(format string, a ...any) // indented detail under the previous line
+	Field(key, value string)      // one "key   value" line of a summary
 }
 
 // Claude Code's palette.
@@ -54,10 +62,11 @@ var (
 	colWarn   = lipgloss.Color("#FFC107")
 	colSelect = lipgloss.Color("#B1B9F9")
 	colDim    = lipgloss.Color("#999999")
+	colShine  = lipgloss.Color("#EB9F7F") // the moving highlight on busy text
 )
 
 type styles struct {
-	accent, ok, err, warn, sel, dim, bold, border lipgloss.Style
+	accent, ok, err, warn, sel, dim, bold, border, shine lipgloss.Style
 }
 
 func newStyles(r *lipgloss.Renderer) styles {
@@ -70,6 +79,7 @@ func newStyles(r *lipgloss.Renderer) styles {
 		dim:    r.NewStyle().Foreground(colDim),
 		bold:   r.NewStyle().Bold(true),
 		border: r.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colAccent).Padding(0, 1),
+		shine:  r.NewStyle().Foreground(colShine).Bold(true),
 	}
 }
 
@@ -127,6 +137,10 @@ func (p printer) Info(format string, a ...any) {
 
 func (p printer) Item(format string, a ...any) {
 	p.line("    " + p.st.dim.Render("⎿") + " " + fmt.Sprintf(format, a...))
+}
+
+func (p printer) Field(key, value string) {
+	p.line("  " + p.st.dim.Render(fmt.Sprintf("%-14s", key)) + value)
 }
 
 // done renders the line an answered question leaves behind.

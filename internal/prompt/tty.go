@@ -59,8 +59,13 @@ func (t *TTY) run(m tea.Model) (tea.Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	if a, ok := final.(interface{ isAborted() bool }); ok && a.isAborted() {
-		return nil, ErrAborted
+	if e, ok := final.(interface{ exit() (aborted, back bool) }); ok {
+		switch aborted, back := e.exit(); {
+		case aborted:
+			return nil, ErrAborted
+		case back:
+			return nil, ErrBack
+		}
 	}
 	return final, nil
 }
@@ -134,6 +139,8 @@ type inputModel struct {
 	value        string
 	done         bool
 	aborted      bool
+	back         bool
+	frame        int
 }
 
 func newInputModel(p printer, label, def string, check Check) inputModel {
@@ -158,7 +165,7 @@ func (m *inputModel) resize(termWidth int) {
 	m.ti.Width = m.width - 6
 }
 
-func (m inputModel) isAborted() bool { return m.aborted }
+func (m inputModel) exit() (bool, bool) { return m.aborted, m.back }
 
 func (m inputModel) Init() tea.Cmd { return textinput.Blink }
 
@@ -170,6 +177,11 @@ func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			m.aborted = true
+			return m, tea.Quit
+		}
+		if msg.Type == tea.KeyEsc {
+			// Also while a slow check runs; its result is dropped.
+			m.back = true
 			return m, tea.Quit
 		}
 		if m.checking {
@@ -212,6 +224,7 @@ func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.sp, cmd = m.sp.Update(msg)
+		m.frame++
 		return m, cmd
 	}
 	var cmd tea.Cmd
@@ -227,6 +240,9 @@ func (m inputModel) View() string {
 	if m.aborted {
 		return "  " + st.err.Render("✗") + " " + m.label + "\n"
 	}
+	if m.back {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("  " + st.accent.Render("?") + " " + st.bold.Render(m.label) + "\n")
 	box := st.border.BorderForeground(colDim).Width(m.width)
@@ -234,13 +250,13 @@ func (m inputModel) View() string {
 	switch {
 	case m.checking && time.Since(m.checkStarted) > 250*time.Millisecond:
 		// Quick checks never show the spinner, slow ones (git) do.
-		b.WriteString("    " + m.sp.View() + " " + st.dim.Render("checking "+m.value+"…") + "\n")
+		b.WriteString("    " + m.sp.View() + " " + shimmer(st, "Checking "+m.value+"…", m.frame) + "\n")
 	case m.errMsg != "":
 		b.WriteString("    " + st.err.Render("✗ "+m.errMsg) + "\n")
 	default:
-		hint := "enter to confirm · ctrl+c to quit"
+		hint := "enter to confirm · esc to go back · ctrl+c to quit"
 		if m.def != "" {
-			hint = "enter keeps the grey value · tab edits it · ctrl+c to quit"
+			hint = "enter keeps the grey value · tab edits it · esc to go back"
 		}
 		b.WriteString("    " + st.dim.Render(hint) + "\n")
 	}
@@ -259,6 +275,7 @@ type selectModel struct {
 	cursor  int
 	done    bool
 	aborted bool
+	back    bool
 }
 
 func newSelectModel(p printer, label string, options []string, def int) selectModel {
@@ -268,7 +285,7 @@ func newSelectModel(p printer, label string, options []string, def int) selectMo
 	return selectModel{p: p, label: label, options: options, cursor: def}
 }
 
-func (m selectModel) isAborted() bool { return m.aborted }
+func (m selectModel) exit() (bool, bool) { return m.aborted, m.back }
 
 func (m selectModel) Init() tea.Cmd { return nil }
 
@@ -280,6 +297,9 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "ctrl+c":
 		m.aborted = true
+		return m, tea.Quit
+	case "esc":
+		m.back = true
 		return m, tea.Quit
 	case "up", "k", "shift+tab":
 		m.cursor = (m.cursor + len(m.options) - 1) % len(m.options)
@@ -310,6 +330,9 @@ func (m selectModel) View() string {
 	if m.aborted {
 		return "  " + st.err.Render("✗") + " " + m.label + "\n"
 	}
+	if m.back {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("  " + st.accent.Render("?") + " " + st.bold.Render(m.label) + "\n")
 	// Long lists show a window around the cursor so the question stays on
@@ -334,7 +357,7 @@ func (m selectModel) View() string {
 	if end < len(m.options) {
 		b.WriteString("    " + st.dim.Render("↓ "+strconv.Itoa(len(m.options)-end)+" more") + "\n")
 	}
-	b.WriteString("    " + st.dim.Render("↑/↓ to move · enter to select · ctrl+c to quit") + "\n")
+	b.WriteString("    " + st.dim.Render("↑/↓ to move · enter to select · esc to go back · ctrl+c to quit") + "\n")
 	return b.String()
 }
 
@@ -355,6 +378,7 @@ type taskModel struct {
 	err     error
 	done    bool
 	aborted bool
+	frame   int
 }
 
 func newTaskModel(p printer, label string, fn func() (string, error)) taskModel {
@@ -362,7 +386,7 @@ func newTaskModel(p printer, label string, fn func() (string, error)) taskModel 
 	return taskModel{p: p, label: label, fn: fn, sp: sp, started: time.Now()}
 }
 
-func (m taskModel) isAborted() bool { return m.aborted }
+func (m taskModel) exit() (bool, bool) { return m.aborted, false }
 
 func (m taskModel) Init() tea.Cmd {
 	fn := m.fn
@@ -385,6 +409,7 @@ func (m taskModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.sp, cmd = m.sp.Update(msg)
+		m.frame++
 		return m, cmd
 	}
 	return m, nil
@@ -400,7 +425,25 @@ func (m taskModel) View() string {
 		return "  " + m.p.st.err.Render("✗") + " " + m.label + "\n"
 	}
 	secs := int(time.Since(m.started).Seconds())
-	return "  " + m.sp.View() + " " + m.p.st.accent.Render(m.label+"…") + " " + m.p.st.dim.Render("("+strconv.Itoa(secs)+"s · ctrl+c to quit)") + "\n"
+	return "  " + m.sp.View() + " " + shimmer(m.p.st, m.label+"…", m.frame) + " " + m.p.st.dim.Render("("+strconv.Itoa(secs)+"s · ctrl+c to quit)") + "\n"
+}
+
+// shimmer renders busy text the way Claude Code does: accent colored, with a
+// lighter highlight sweeping across it, one step per spinner frame.
+func shimmer(st styles, text string, frame int) string {
+	runes := []rune(text)
+	const halo = 2 // highlighted runes on each side of the center
+	span := len(runes) + 2*halo + 4
+	center := (frame*2)%span - halo
+	var b strings.Builder
+	for i, r := range runes {
+		if i >= center-halo && i <= center+halo {
+			b.WriteString(st.shine.Render(string(r)))
+		} else {
+			b.WriteString(st.accent.Render(string(r)))
+		}
+	}
+	return b.String()
 }
 
 func indent(s, pre string) string {

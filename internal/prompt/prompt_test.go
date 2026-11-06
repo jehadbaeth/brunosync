@@ -50,3 +50,16 @@ func TestLastLineWithoutNewline(t *testing.T) {
 		t.Errorf("got %v %v", ok, err)
 	}
 }
+
+func TestBackToken(t *testing.T) {
+	p := New(strings.NewReader("<\n<\n<\n"), &bytes.Buffer{})
+	if _, err := p.Ask("Name", "x"); !errors.Is(err, ErrBack) {
+		t.Errorf("ask: %v", err)
+	}
+	if _, err := p.Choose("Pick", []string{"a"}, 0); !errors.Is(err, ErrBack) {
+		t.Errorf("choose: %v", err)
+	}
+	if _, err := p.Confirm("Sure", true); !errors.Is(err, ErrBack) {
+		t.Errorf("confirm: %v", err)
+	}
+}

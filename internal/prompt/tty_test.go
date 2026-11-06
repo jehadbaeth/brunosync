@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func key(s string) tea.KeyMsg {
@@ -115,5 +116,32 @@ func TestInputModelDefaultAndTab(t *testing.T) {
 	m, _ = m.Update(key("ctrl+c"))
 	if !m.(inputModel).aborted {
 		t.Error("ctrl+c should abort")
+	}
+}
+
+func TestEscGoesBack(t *testing.T) {
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+	var m tea.Model = newSelectModel(testPrinter(), "Pick", []string{"a", "b"}, 0)
+	m, cmd := m.Update(esc)
+	if _, back := m.(selectModel).exit(); !back || cmd == nil || m.View() != "" {
+		t.Error("esc should leave the menu without a trace")
+	}
+	m = newInputModel(testPrinter(), "Host", "", func(string) (string, error) { return "", nil })
+	m, _ = m.Update(key("x"))
+	m, _ = m.Update(key("enter")) // a slow check is running
+	m, cmd = m.Update(esc)
+	if _, back := m.(inputModel).exit(); !back || cmd == nil {
+		t.Error("esc should also cancel a running check")
+	}
+}
+
+func TestShimmerMoves(t *testing.T) {
+	st := newStyles(lipgloss.NewRenderer(io.Discard))
+	if shimmer(st, "Loading", 0) == "" {
+		t.Fatal("empty")
+	}
+	// With colors off the text itself must stay readable.
+	if got := shimmer(testPrinter().st, "Loading", 3); got != "Loading" {
+		t.Errorf("got %q", got)
 	}
 }
