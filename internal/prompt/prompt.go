@@ -1,137 +1,163 @@
-// Package prompt asks questions on a line based terminal. It reads plain
-// lines so it works in every terminal (Windows included) and can be driven by
-// a script in tests.
+// Package prompt talks to the person running the wizard. There are two
+// implementations of UI: a terminal UI (arrow key menus, spinners, colors,
+// styled after Claude Code) and a plain line based one used for tests and
+// scripted input. Both validate answers right away and show the result with a
+// check mark or a cross.
 package prompt
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
-// ErrAborted is returned when the input ends before a question is answered.
+// ErrAborted is returned when the user quits (Ctrl+C) or the input ends.
 var ErrAborted = errors.New("aborted")
 
-// Prompter asks questions.
-type Prompter struct {
-	in  *bufio.Reader
-	out io.Writer
+// Check validates an answer. On success it may return a short message that
+// is shown next to a green check mark, for example "found 3 specs".
+type Check func(answer string) (string, error)
+
+// UI asks questions and prints results.
+type UI interface {
+	// Ask asks for a string. An empty answer returns def.
+	Ask(label, def string) (string, error)
+	// AskValid asks until check accepts the answer. check may be slow (it
+	// runs behind a spinner) and may be nil.
+	AskValid(label, def string, check Check) (string, error)
+	Confirm(label string, def bool) (bool, error)
+	// Choose returns the index picked. def is preselected, -1 for none.
+	Choose(label string, options []string, def int) (int, error)
+	// List asks for a comma separated list.
+	List(label string, def []string) ([]string, error)
+	// Task runs fn behind a spinner and reports its outcome.
+	Task(label string, fn func() (string, error)) (string, error)
+
+	Banner(title string, lines ...string)
+	Section(title string)
+	OK(format string, a ...any)
+	Warn(format string, a ...any)
+	Fail(format string, a ...any)
+	Info(format string, a ...any)
+	Item(format string, a ...any) // indented detail under the previous line
 }
 
-// New returns a prompter reading answers from in and writing to out.
-func New(in io.Reader, out io.Writer) *Prompter {
-	return &Prompter{in: bufio.NewReader(in), out: out}
+// Claude Code's palette.
+var (
+	colAccent = lipgloss.Color("#D77757")
+	colOK     = lipgloss.Color("#4EBA65")
+	colErr    = lipgloss.Color("#FF6B80")
+	colWarn   = lipgloss.Color("#FFC107")
+	colSelect = lipgloss.Color("#B1B9F9")
+	colDim    = lipgloss.Color("#999999")
+)
+
+type styles struct {
+	accent, ok, err, warn, sel, dim, bold, border lipgloss.Style
 }
 
-// Printf writes text to the output.
-func (p *Prompter) Printf(format string, a ...any) { fmt.Fprintf(p.out, format, a...) }
-
-func (p *Prompter) line() (string, error) {
-	s, err := p.in.ReadString('\n')
-	if err != nil && (s == "" || !errors.Is(err, io.EOF)) {
-		if errors.Is(err, io.EOF) {
-			fmt.Fprintln(p.out)
-			return "", ErrAborted
-		}
-		return "", err
-	}
-	return strings.TrimSpace(strings.TrimRight(s, "\r\n")), nil
-}
-
-// Ask asks for a string. An empty answer returns def.
-func (p *Prompter) Ask(label, def string) (string, error) {
-	return p.AskValid(label, def, nil)
-}
-
-// AskValid asks until check accepts the answer. An empty answer returns def
-// (also checked). check may be nil.
-func (p *Prompter) AskValid(label, def string, check func(string) error) (string, error) {
-	for {
-		if def != "" {
-			fmt.Fprintf(p.out, "%s [%s]: ", label, def)
-		} else {
-			fmt.Fprintf(p.out, "%s: ", label)
-		}
-		s, err := p.line()
-		if err != nil {
-			return "", err
-		}
-		if s == "" {
-			s = def
-		}
-		if check != nil {
-			if err := check(s); err != nil {
-				fmt.Fprintf(p.out, "  %v\n", err)
-				continue
-			}
-		}
-		return s, nil
-	}
-}
-
-// Confirm asks a yes or no question.
-func (p *Prompter) Confirm(label string, def bool) (bool, error) {
-	hint := "y/N"
-	if def {
-		hint = "Y/n"
-	}
-	for {
-		fmt.Fprintf(p.out, "%s [%s]: ", label, hint)
-		s, err := p.line()
-		if err != nil {
-			return false, err
-		}
-		switch strings.ToLower(s) {
-		case "":
-			return def, nil
-		case "y", "yes":
-			return true, nil
-		case "n", "no":
-			return false, nil
-		}
-		fmt.Fprintln(p.out, "  please answer y or n")
+func newStyles(r *lipgloss.Renderer) styles {
+	return styles{
+		accent: r.NewStyle().Foreground(colAccent),
+		ok:     r.NewStyle().Foreground(colOK),
+		err:    r.NewStyle().Foreground(colErr),
+		warn:   r.NewStyle().Foreground(colWarn),
+		sel:    r.NewStyle().Foreground(colSelect),
+		dim:    r.NewStyle().Foreground(colDim),
+		bold:   r.NewStyle().Bold(true),
+		border: r.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colAccent).Padding(0, 1),
 	}
 }
 
-// Choose shows a numbered list and returns the index picked. def is the
-// index used for an empty answer, or -1 for no default.
-func (p *Prompter) Choose(label string, options []string, def int) (int, error) {
-	fmt.Fprintln(p.out, label)
-	for i, o := range options {
-		fmt.Fprintf(p.out, "  %d) %s\n", i+1, o)
-	}
-	d := ""
-	if def >= 0 {
-		d = strconv.Itoa(def + 1)
-	}
-	s, err := p.AskValid("Choose", d, func(s string) error {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 || n > len(options) {
-			return fmt.Errorf("enter a number from 1 to %d", len(options))
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	n, _ := strconv.Atoi(s)
-	return n - 1, nil
+// printer holds what both implementations share: writing styled lines.
+type printer struct {
+	out   io.Writer
+	st    styles
+	width int // terminal width, 0 when unknown (plain output)
 }
 
-// List asks for a comma separated list. An empty answer returns def.
-func (p *Prompter) List(label string, def []string) ([]string, error) {
-	s, err := p.Ask(label, strings.Join(def, ", "))
-	if err != nil {
-		return nil, err
+func newPrinter(out io.Writer, color bool) printer {
+	r := lipgloss.NewRenderer(out)
+	// Never ask the terminal for its background color: the query reads from
+	// stdin and eats the first keys typed (or hangs where nobody answers).
+	r.SetHasDarkBackground(true)
+	if !color {
+		r.SetColorProfile(termenv.Ascii)
 	}
+	return printer{out: out, st: newStyles(r)}
+}
+
+func (p printer) line(s string) { fmt.Fprintln(p.out, s) }
+
+func (p printer) Banner(title string, lines ...string) {
+	body := p.st.accent.Render("✻") + " " + p.st.bold.Render(title)
+	if len(lines) > 0 {
+		body += "\n\n" + p.st.dim.Render(strings.Join(lines, "\n"))
+	}
+	box := p.st.border
+	if p.width > 0 {
+		box = box.Width(min(p.width-2, 100)) // wraps long paths instead of breaking the frame
+	}
+	p.line(box.Render(body))
+}
+
+func (p printer) Section(title string) {
+	p.line("\n" + p.st.accent.Render("⏺") + " " + p.st.bold.Render(title))
+}
+
+func (p printer) OK(format string, a ...any) {
+	p.line("  " + p.st.ok.Render("✓") + " " + fmt.Sprintf(format, a...))
+}
+
+func (p printer) Warn(format string, a ...any) {
+	p.line("  " + p.st.warn.Render("⚠") + " " + fmt.Sprintf(format, a...))
+}
+
+func (p printer) Fail(format string, a ...any) {
+	p.line("  " + p.st.err.Render("✗") + " " + fmt.Sprintf(format, a...))
+}
+
+func (p printer) Info(format string, a ...any) {
+	p.line("  " + p.st.dim.Render(fmt.Sprintf(format, a...)))
+}
+
+func (p printer) Item(format string, a ...any) {
+	p.line("    " + p.st.dim.Render("⎿") + " " + fmt.Sprintf(format, a...))
+}
+
+// done renders the line an answered question leaves behind.
+func (p printer) done(label, answer, msg string) string {
+	s := "  " + p.st.ok.Render("✓") + " " + label
+	if answer != "" {
+		s += "  " + p.st.dim.Render(answer)
+	}
+	if msg != "" {
+		s += "\n    " + p.st.dim.Render("⎿") + " " + p.st.ok.Render(msg)
+	}
+	return s
+}
+
+func (p printer) failed(label, msg string) string {
+	return "  " + p.st.err.Render("✗") + " " + label + "\n    " + p.st.dim.Render("⎿") + " " + p.st.err.Render(msg)
+}
+
+func splitList(s string) []string {
 	var out []string
 	for _, part := range strings.Split(s, ",") {
 		if part = strings.TrimSpace(part); part != "" {
 			out = append(out, part)
 		}
 	}
-	return out, nil
+	return out
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "Yes"
+	}
+	return "No"
 }

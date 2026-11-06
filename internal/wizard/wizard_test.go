@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -97,15 +98,21 @@ func TestEditExistingConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	remote := filepath.Join(t.TempDir(), "collection.git")
+	if out, err := exec.Command("git", "init", "--quiet", "--bare", remote).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
 	res, out := runWizard(t, path, script(
-		"5", "3", "git@example.com:team/collection.git", "", "collection", "", // git output
+		"5", "3", filepath.Join(remote, "missing"), remote, "", "collection", "", // git output, a bad URL first
 		"1", "", // save; sync defaults to no for git
 	))
 	if !res.Saved || res.RunSync {
 		t.Fatalf("result = %+v\n%s", res, out)
 	}
-	if !strings.Contains(out, "commits and pushes to git@example.com:team/collection.git") {
-		t.Errorf("sync question should warn about pushing:\n%s", out)
+	for _, want := range []string{"✗ cannot reach it", "✓ reachable, empty repository", "commits and pushes to " + remote} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output misses %q:\n%s", want, out)
+		}
 	}
 	cfg, err := config.Load(path)
 	if err != nil {

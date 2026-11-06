@@ -17,11 +17,11 @@ func TestPrompts(t *testing.T) {
 	if s, _ := p.Ask("Name", "local"); s != "local" {
 		t.Errorf("default not used: %q", s)
 	}
-	if s, _ := p.AskValid("Env", "", func(s string) error {
+	if s, _ := p.AskValid("Env", "", func(s string) (string, error) {
 		if s == "" {
-			return fmt.Errorf("required")
+			return "", fmt.Errorf("required")
 		}
-		return nil
+		return "looks good", nil
 	}); s != "staging" {
 		t.Errorf("got %q", s)
 	}
@@ -34,7 +34,7 @@ func TestPrompts(t *testing.T) {
 	if l, _ := p.List("List", nil); strings.Join(l, "|") != "a|b|c" {
 		t.Errorf("list = %v", l)
 	}
-	for _, want := range []string{"Name [local]: ", "please answer y or n", "enter a number from 1 to 2"} {
+	for _, want := range []string{"? Name [local]: ", "✓ looks good", "please answer y or n", "enter a number from 1 to 2"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output misses %q:\n%s", want, out.String())
 		}

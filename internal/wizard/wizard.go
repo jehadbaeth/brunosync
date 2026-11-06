@@ -1,6 +1,8 @@
 // Package wizard edits brunosync.yml interactively. It only writes the config
-// file. Everything it shows (service names, operation counts, problems) comes
-// from the same loader sync uses, so what you see is what sync will do.
+// file. Every answer is checked right away (folders exist, git URLs answer,
+// branches exist, repos contain specs, names are free), and everything it
+// shows comes from the same loader sync uses, so what you see is what sync
+// will do.
 package wizard
 
 import (
@@ -21,6 +23,8 @@ import (
 
 // Options configure a wizard run.
 type Options struct {
+	// UI to talk through. When nil, a plain line based UI on In and Out.
+	UI      prompt.UI
 	In      io.Reader
 	Out     io.Writer
 	Path    string // config file to create or edit
@@ -35,8 +39,7 @@ type Result struct {
 }
 
 type wizard struct {
-	p       *prompt.Prompter
-	out     io.Writer
+	ui      prompt.UI
 	path    string
 	cfg     *config.Config // as written in the file, without defaults
 	exists  bool
@@ -46,20 +49,18 @@ type wizard struct {
 }
 
 // Run starts the wizard. It creates the config file when it does not exist
-// and edits it otherwise. When the input ends early it returns
+// and edits it otherwise. When the user quits early it returns
 // prompt.ErrAborted and writes nothing.
 func Run(opt Options) (Result, error) {
 	abs, err := filepath.Abs(opt.Path)
 	if err != nil {
 		return Result{}, err
 	}
-	w := &wizard{
-		p:       prompt.New(opt.In, opt.Out),
-		out:     opt.Out,
-		path:    abs,
-		offline: opt.Offline,
-		fetched: map[string]bool{},
+	ui := opt.UI
+	if ui == nil {
+		ui = prompt.New(opt.In, opt.Out)
 	}
+	w := &wizard{ui: ui, path: abs, offline: opt.Offline, fetched: map[string]bool{}}
 	if _, err := os.Stat(abs); err == nil {
 		if w.cfg, err = config.Decode(abs); err != nil {
 			return Result{}, err
@@ -72,36 +73,34 @@ func Run(opt Options) (Result, error) {
 	}
 	res, err := w.run()
 	if errors.Is(err, prompt.ErrAborted) {
-		w.say("Stopped, nothing was saved.")
+		w.ui.Info("Stopped, nothing was saved.")
 	}
 	return res, err
 }
 
-func (w *wizard) say(format string, a ...any) { fmt.Fprintf(w.out, format+"\n", a...) }
-
 func (w *wizard) run() (Result, error) {
 	if w.exists {
-		w.say("Editing %s.", w.path)
-		w.say("Saving rewrites the file without its comments. The previous version is kept as %s.bak.", filepath.Base(w.path))
+		w.ui.Banner("brunosync configure",
+			"Editing "+w.path,
+			"Saving rewrites it without comments and keeps the old one as "+filepath.Base(w.path)+".bak.")
 	} else {
-		w.say("This wizard writes %s. It asks for:", w.path)
-		w.say("  1. the collection name and folder")
-		w.say("  2. the repositories holding your OpenAPI specs")
-		w.say("  3. the service names found in them")
-		w.say("  4. environments (staging, prod, ...) with hosts and ports")
-		w.say("  5. where the collection goes (folder, zip or git)")
-		w.say("Press Enter to take the value in [brackets]. Ctrl+C stops without saving.")
+		w.ui.Banner("brunosync setup",
+			"Writes "+w.path,
+			"",
+			"1. collection name and folder",
+			"2. repositories with OpenAPI specs (checked as you add them)",
+			"3. service names",
+			"4. environments: hosts and ports for staging, prod, ...",
+			"5. where the collection goes: folder, zip or git")
 		for _, step := range []func() error{w.editCollection, w.editRepos, w.editServices, w.editEnvironments, w.editOutput} {
-			w.say("")
 			if err := step(); err != nil {
 				return Result{}, err
 			}
 		}
 	}
 	for {
-		w.say("")
 		w.summary()
-		i, err := w.p.Choose("\nWhat next?", []string{
+		i, err := w.ui.Choose("What next?", []string{
 			"Save",
 			"Repositories",
 			"Services",
@@ -113,21 +112,20 @@ func (w *wizard) run() (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		w.say("")
 		switch i {
 		case 0:
 			saved, err := w.save()
-			if err != nil || !saved {
-				if err != nil {
-					return Result{}, err
-				}
+			if err != nil {
+				return Result{}, err
+			}
+			if !saved {
 				continue
 			}
 			question := "Run brunosync sync now?"
 			if w.cfg.Output.Type == config.OutputGit {
 				question = "Run brunosync sync now? It commits and pushes to " + w.cfg.Output.Git.URL
 			}
-			runSync, err := w.p.Confirm(question, w.cfg.Output.Type != config.OutputGit)
+			runSync, err := w.ui.Confirm(question, w.cfg.Output.Type != config.OutputGit)
 			if err != nil {
 				return Result{}, err
 			}
@@ -143,12 +141,12 @@ func (w *wizard) run() (Result, error) {
 		case 5:
 			err = w.editCollection()
 		case 6:
-			quit, err := w.p.Confirm("Quit without saving?", false)
+			quit, err := w.ui.Confirm("Quit without saving?", false)
 			if err != nil {
 				return Result{}, err
 			}
 			if quit {
-				w.say("Nothing was saved.")
+				w.ui.Info("Nothing was saved.")
 				return Result{Path: w.path}, nil
 			}
 		}
@@ -158,17 +156,18 @@ func (w *wizard) run() (Result, error) {
 	}
 }
 
-// load returns the loader result for the current config, loading it when the
-// repos or overrides changed. Git repos are fetched once per session.
-func (w *wizard) load() *syncer.LoadResult {
+// load returns the loader result for the current config, loading it behind
+// a spinner when the repos or overrides changed. Git repos are fetched once
+// per session.
+func (w *wizard) load() (*syncer.LoadResult, error) {
 	if w.res != nil {
-		return w.res
+		return w.res, nil
 	}
 	prepared, err := config.Prepared(w.cfg)
 	if err != nil {
-		// Only possible with repos missing; show nothing rather than fail.
-		w.res = &syncer.LoadResult{FailedServices: map[string]bool{}, FailedRepos: map[string]bool{}, Errors: []string{err.Error()}}
-		return w.res
+		// Only possible while no repo is configured.
+		w.res = &syncer.LoadResult{FailedServices: map[string]bool{}, FailedRepos: map[string]bool{}}
+		return w.res, nil
 	}
 	offline := w.offline
 	if !offline {
@@ -179,17 +178,29 @@ func (w *wizard) load() *syncer.LoadResult {
 			}
 		}
 	}
-	w.res = syncer.LoadAll(prepared, source.Options{Offline: offline, Log: func(f string, a ...any) {
-		if strings.HasPrefix(f, "cloning") || strings.HasPrefix(f, "updating") {
-			w.say("  "+f+" (with your git credentials)...", a...)
+	label := "Loading specs"
+	if !offline {
+		label = "Fetching repositories and loading specs"
+	}
+	var res *syncer.LoadResult
+	_, err = w.ui.Task(label, func() (string, error) {
+		res = syncer.LoadAll(prepared, source.Options{Offline: offline})
+		ops := 0
+		for _, l := range res.Services {
+			ops += len(l.Service.Operations)
 		}
-	}})
+		return fmt.Sprintf("%d service(s), %d request(s)", len(res.Services), ops), nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	for _, r := range prepared.Repos {
-		if r.Git != "" && !w.res.FailedRepos[r.Name] {
+		if r.Git != "" && !res.FailedRepos[r.Name] {
 			w.fetched[r.Git+"@"+r.Ref] = true
 		}
 	}
-	return w.res
+	w.res = res
+	return res, nil
 }
 
 func (w *wizard) changed() { w.res = nil }
@@ -197,12 +208,12 @@ func (w *wizard) changed() { w.res = nil }
 // ---- collection
 
 func (w *wizard) editCollection() error {
-	w.say("Collection")
-	name, err := w.p.AskValid("  Name shown in Bruno", or(w.cfg.Collection.Name, "APIs"), required)
+	w.ui.Section("Collection")
+	name, err := w.ui.AskValid("Name shown in Bruno", or(w.cfg.Collection.Name, "APIs"), required)
 	if err != nil {
 		return err
 	}
-	path, err := w.p.AskValid("  Folder to write it to (relative to the config file)", or(w.cfg.Collection.Path, "./collection"), required)
+	path, err := w.ui.AskValid("Folder for the collection (relative to the config file)", or(w.cfg.Collection.Path, "./collection"), w.checkCollectionDir)
 	if err != nil {
 		return err
 	}
@@ -210,24 +221,45 @@ func (w *wizard) editCollection() error {
 	return nil
 }
 
+func (w *wizard) checkCollectionDir(s string) (string, error) {
+	if s == "" {
+		return "", errors.New("a folder is required")
+	}
+	dir := w.cfg.Abs(s)
+	st, err := os.Stat(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "will be created on the first sync", nil
+	case err != nil:
+		return "", err
+	case !st.IsDir():
+		return "", fmt.Errorf("%s is a file", s)
+	}
+	if _, err := os.Stat(filepath.Join(dir, syncer.StateDir, "manifest.json")); err == nil {
+		return "existing brunosync collection, the next sync merges into it", nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, "opencollection.yml")); err == nil {
+		return "existing Bruno collection, brunosync adds its requests next to yours", nil
+	}
+	return "folder exists, the collection is created inside it", nil
+}
+
 // ---- repositories
 
 func (w *wizard) editRepos() error {
 	for {
-		w.say("Repositories")
+		w.ui.Section("Repositories")
 		if len(w.cfg.Repos) == 0 {
-			w.say("  none yet")
-		}
-		for i, r := range w.cfg.Repos {
-			w.say("  %d. %-20s %s", i+1, config.RepoName(r), repoSource(r))
-		}
-		if len(w.cfg.Repos) == 0 {
+			w.ui.Info("Add the repositories that hold your OpenAPI specs. Local checkouts and git URLs both work.")
 			if err := w.addRepo(); err != nil {
 				return err
 			}
 			continue
 		}
-		i, err := w.p.Choose("", []string{"Add a repository", "Remove a repository", "Done"}, 2)
+		for _, r := range w.cfg.Repos {
+			w.ui.OK("%s  %s", config.RepoName(r), repoSource(r))
+		}
+		i, err := w.ui.Choose("Repositories", []string{"Add another repository", "Remove a repository", "Done"}, 2)
 		if err != nil {
 			return err
 		}
@@ -245,25 +277,62 @@ func (w *wizard) editRepos() error {
 	}
 }
 
+// checkSource validates a repo answer the moment it is given: a folder must
+// exist, a git URL must answer with your credentials.
+func (w *wizard) checkSource(s string) (string, error) {
+	if s == "" {
+		return "", errors.New("enter a folder or a git URL")
+	}
+	for _, r := range w.cfg.Repos {
+		if r.Path == s || r.Git == s {
+			return "", fmt.Errorf("%s is already added", s)
+		}
+	}
+	if isGitURL(s) {
+		if w.offline {
+			return "offline, not checked", nil
+		}
+		branch, err := source.Probe(s)
+		if err != nil {
+			return "", fmt.Errorf("cannot reach it: %v", err)
+		}
+		if branch == "" {
+			return "reachable, but the repository is empty", nil
+		}
+		return "reachable, default branch " + branch, nil
+	}
+	st, err := os.Stat(w.cfg.Abs(s))
+	if err != nil || !st.IsDir() {
+		return "", fmt.Errorf("no folder %s (relative paths start at %s)", s, w.cfg.Dir)
+	}
+	return "folder found", nil
+}
+
 func (w *wizard) addRepo() error {
-	src, err := w.p.AskValid("  Local folder or git URL (git@host:group/repo.git)", "", func(s string) error {
-		if s == "" {
-			return errors.New("enter a folder or a git URL")
-		}
-		if !isGitURL(s) {
-			if st, err := os.Stat(w.cfg.Abs(s)); err != nil || !st.IsDir() {
-				return fmt.Errorf("%s is not a folder (paths are relative to %s)", s, w.cfg.Dir)
-			}
-		}
-		return nil
-	})
+	src, err := w.ui.AskValid("Local folder or git URL (git@host:group/repo.git)", "", w.checkSource)
 	if err != nil {
 		return err
 	}
 	var r config.Repo
 	if isGitURL(src) {
 		r.Git = src
-		if r.Ref, err = w.p.Ask("  Branch or tag (Enter for the default branch)", ""); err != nil {
+		r.Ref, err = w.ui.AskValid("Branch or tag (empty for the default branch)", "", func(ref string) (string, error) {
+			if ref == "" {
+				return "", nil
+			}
+			if w.offline {
+				return "offline, not checked", nil
+			}
+			ok, err := source.HasRef(src, ref)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "", fmt.Errorf("no branch or tag %s in %s", ref, src)
+			}
+			return "found", nil
+		})
+		if err != nil {
 			return err
 		}
 	} else {
@@ -274,11 +343,11 @@ func (w *wizard) addRepo() error {
 		taken[config.RepoName(o)] = true
 	}
 	if taken[config.RepoName(r)] {
-		name, err := w.p.AskValid("  A repository named "+config.RepoName(r)+" exists already. Name for this one", "", func(s string) error {
+		name, err := w.ui.AskValid("A repository named "+config.RepoName(r)+" exists already. Name for this one", "", func(s string) (string, error) {
 			if s == "" || taken[s] {
-				return errors.New("enter a name that is not used yet")
+				return "", errors.New("enter a name that is not used yet")
 			}
-			return nil
+			return "", nil
 		})
 		if err != nil {
 			return err
@@ -286,40 +355,47 @@ func (w *wizard) addRepo() error {
 		r.Name = name
 	}
 	w.cfg.Repos = append(w.cfg.Repos, r)
-	idx := len(w.cfg.Repos) - 1
-	name := config.RepoName(r)
-	w.changed()
+	return w.scanRepo(len(w.cfg.Repos) - 1)
+}
 
+// scanRepo looks for specs in a newly added repo and reports them. When none
+// match the patterns it asks for others, checking each answer on the spot.
+func (w *wizard) scanRepo(idx int) error {
+	name := config.RepoName(w.cfg.Repos[idx])
 	for {
-		res := w.load()
+		w.changed()
+		res, err := w.load()
+		if err != nil {
+			return err
+		}
 		if !res.FailedRepos[name] {
 			w.printSpecs(res, name)
 			return nil
 		}
+		repoErr := ""
 		for _, e := range res.Errors {
 			if strings.HasPrefix(e, "repo "+name+":") {
-				w.say("  %s", e)
+				repoErr = strings.TrimPrefix(e, "repo "+name+": ")
 			}
 		}
-		noSpecs := false
-		for _, e := range res.Errors {
-			if strings.HasPrefix(e, "repo "+name+": no spec files match") {
-				noSpecs = true
-			}
-		}
-		if noSpecs {
-			w.say("  Specs are found by file name patterns. ** matches any folders.")
-			patterns, err := w.p.List("  Patterns, comma separated (Enter to remove the repository)", nil)
+		w.ui.Fail("%s: %s", name, repoErr)
+		if strings.HasPrefix(repoErr, "no spec files match") {
+			w.ui.Info("Specs are found by file name. ** matches any folders, e.g. **/api/*.yaml")
+			patterns, err := w.ui.AskValid("File patterns, comma separated (empty removes the repository)", "", func(s string) (string, error) {
+				if s == "" {
+					return "", nil
+				}
+				return w.countMatches(idx, splitList(s))
+			})
 			if err != nil {
 				return err
 			}
-			if len(patterns) > 0 {
-				w.cfg.Repos[idx].Specs = patterns
-				w.changed()
+			if p := splitList(patterns); len(p) > 0 {
+				w.cfg.Repos[idx].Specs = p
 				continue
 			}
 		} else {
-			keep, err := w.p.Confirm("  Keep this repository anyway?", false)
+			keep, err := w.ui.Confirm("Keep this repository anyway?", false)
 			if err != nil {
 				return err
 			}
@@ -329,9 +405,39 @@ func (w *wizard) addRepo() error {
 		}
 		w.cfg.Repos = append(w.cfg.Repos[:idx], w.cfg.Repos[idx+1:]...)
 		w.changed()
-		w.say("  Removed %s.", name)
+		w.ui.Info("Removed %s.", name)
 		return nil
 	}
+}
+
+// countMatches checks spec patterns against a repo that is already on disk.
+func (w *wizard) countMatches(idx int, patterns []string) (string, error) {
+	prepared, err := config.Prepared(w.cfg)
+	if err != nil {
+		return "", err
+	}
+	r := prepared.Repos[idx]
+	r.Specs = patterns
+	dir, err := source.Resolve(prepared, r, source.Options{Offline: true})
+	if err != nil {
+		return "", err
+	}
+	files, err := source.Discover(r, dir)
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", errors.New("no file matches, try again")
+	}
+	names := []string{}
+	for i, f := range files {
+		if i == 3 {
+			names = append(names, "...")
+			break
+		}
+		names = append(names, f.Rel)
+	}
+	return fmt.Sprintf("%d file(s): %s", len(files), strings.Join(names, ", ")), nil
 }
 
 func (w *wizard) removeRepo() error {
@@ -339,7 +445,7 @@ func (w *wizard) removeRepo() error {
 	for _, r := range w.cfg.Repos {
 		names = append(names, config.RepoName(r)+"  "+repoSource(r))
 	}
-	i, err := w.p.Choose("  Which one?", append(names, "Cancel"), len(names))
+	i, err := w.ui.Choose("Remove which repository?", append(names, "Cancel"), len(names))
 	if err != nil || i == len(names) {
 		return err
 	}
@@ -362,51 +468,60 @@ func selectable(res *syncer.LoadResult) []syncer.SpecStatus {
 }
 
 // printSpecs lists the specs of one repo, or of all repos when repo is "".
-// Selectable specs get the numbers used by the service menu.
 func (w *wizard) printSpecs(res *syncer.LoadResult, repo string) {
-	n := 0
+	shown := 0
 	for _, s := range res.Specs {
-		if s.Status != syncer.SpecLibrary {
-			n++
-		}
 		if repo != "" && s.Repo != repo {
 			continue
 		}
-		num := "  "
-		if s.Status != syncer.SpecLibrary {
-			num = fmt.Sprintf("%2d", n)
-		}
+		shown++
 		where := s.Repo + ":" + s.Rel
 		switch s.Status {
 		case syncer.SpecOK:
-			w.say("  %s. %-24s %4d requests  %s", num, s.Name, len(s.Service.Operations), where)
+			w.ui.OK("%-24s %4d requests  %s", s.Name, len(s.Service.Operations), where)
 			for _, warn := range s.Service.Warnings {
-				w.say("        warning: %s", warn)
+				w.ui.Item("warning: %s", warn)
 			}
 		case syncer.SpecLibrary:
-			w.say("      %-24s shared module, no requests  %s", s.Name, where)
+			w.ui.Info("· %-24s shared module, no requests  %s", s.Name, where)
 		case syncer.SpecSkipped:
-			w.say("  %s. %-24s skipped  %s", num, s.Name, where)
+			w.ui.Info("· %-24s skipped  %s", s.Name, where)
 		case syncer.SpecDuplicate:
-			w.say("  %s. %-24s NAME TAKEN (%s)  %s", num, s.Name, s.Detail, where)
+			w.ui.Warn("%-24s NAME TAKEN (%s)  %s", s.Name, s.Detail, where)
 		case syncer.SpecFailed:
-			w.say("  %s. %-24s FAILED  %s", num, s.Name, where)
-			w.say("        %s", brief(s.Detail))
+			w.ui.Fail("%-24s FAILED  %s", s.Name, where)
+			w.ui.Item("%s", brief(s.Detail))
 		}
 	}
-	if len(res.Specs) == 0 {
-		w.say("  no specs found")
+	if shown == 0 {
+		w.ui.Info("no specs found")
 	}
+}
+
+func specLabel(s syncer.SpecStatus) string {
+	switch s.Status {
+	case syncer.SpecSkipped:
+		return s.Name + " (skipped)  " + s.Rel
+	case syncer.SpecDuplicate:
+		return s.Name + " (name taken)  " + s.Rel
+	case syncer.SpecFailed:
+		return s.Name + " (failed)  " + s.Rel
+	}
+	return s.Name + "  " + s.Rel
 }
 
 func (w *wizard) editServices() error {
 	for {
-		res := w.load()
-		w.say("Services. Each spec becomes a folder in the collection.")
+		res, err := w.load()
+		if err != nil {
+			return err
+		}
+		w.ui.Section("Services")
+		w.ui.Info("Each spec becomes a folder in the collection. The name is its identity and variable prefix.")
 		w.printSpecs(res, "")
 		for _, e := range res.Errors {
 			if strings.HasPrefix(e, "repo ") {
-				w.say("  %s", firstLine(e))
+				w.ui.Fail("%s", brief(e))
 			}
 		}
 		dups := 0
@@ -416,7 +531,7 @@ func (w *wizard) editServices() error {
 			}
 		}
 		if dups > 0 {
-			w.say("  Specs marked NAME TAKEN derive the same service name and will not sync. Rename one of them.")
+			w.ui.Warn("Specs marked NAME TAKEN derive the same service name and will not sync. Rename one of them.")
 		}
 		specs := selectable(res)
 		if len(specs) == 0 {
@@ -426,7 +541,7 @@ func (w *wizard) editServices() error {
 		if dups > 0 {
 			def = 0
 		}
-		i, err := w.p.Choose("", []string{"Rename a service", "Skip or include a spec", "Set the folder name shown in Bruno", "Done"}, def)
+		i, err := w.ui.Choose("Services", []string{"Rename a service", "Skip or include a spec", "Set the folder name shown in Bruno", "Done"}, def)
 		if err != nil {
 			return err
 		}
@@ -434,25 +549,28 @@ func (w *wizard) editServices() error {
 			if dups == 0 {
 				return nil
 			}
-			ok, err := w.p.Confirm("  Some specs share a name and will not sync. Continue anyway?", false)
+			ok, err := w.ui.Confirm("Some specs share a name and will not sync. Continue anyway?", false)
 			if err != nil || ok {
 				return err
 			}
 			continue
 		}
-		n, err := w.p.AskValid("  Spec number", "", func(s string) error {
-			var k int
-			if _, err := fmt.Sscanf(s, "%d", &k); err != nil || k < 1 || k > len(specs) {
-				return fmt.Errorf("enter a number from 1 to %d", len(specs))
+		var labels []string
+		pick := -1
+		for k, s := range specs {
+			labels = append(labels, specLabel(s))
+			if pick < 0 && s.Status == syncer.SpecDuplicate {
+				pick = k
 			}
-			return nil
-		})
+		}
+		k, err := w.ui.Choose("Which spec?", append(labels, "Cancel"), pick)
 		if err != nil {
 			return err
 		}
-		var k int
-		fmt.Sscanf(n, "%d", &k)
-		st := specs[k-1]
+		if k == len(specs) {
+			continue
+		}
+		st := specs[k]
 		switch i {
 		case 0:
 			err = w.renameService(res, st)
@@ -460,16 +578,16 @@ func (w *wizard) editServices() error {
 			skip := st.Status != syncer.SpecSkipped
 			w.setOverride(st, func(o *config.Override) { o.Skip = skip })
 			if skip {
-				w.say("  %s will be skipped.", st.Rel)
+				w.ui.OK("%s will be skipped", st.Rel)
 			} else {
-				w.say("  %s will be synced again.", st.Rel)
+				w.ui.OK("%s will be synced again", st.Rel)
 			}
 		case 2:
 			def := ""
 			if st.Service != nil {
 				def = st.Service.Folder
 			}
-			folder, err := w.p.Ask("  Folder name ('-' goes back to the spec title)", def)
+			folder, err := w.ui.Ask("Folder name ('-' goes back to the spec title)", def)
 			if err != nil {
 				return err
 			}
@@ -488,25 +606,24 @@ func (w *wizard) editServices() error {
 }
 
 func (w *wizard) renameService(res *syncer.LoadResult, st syncer.SpecStatus) error {
-	others := map[string]bool{}
+	others := map[string]string{}
 	for _, s := range res.Specs {
 		if s.Repo != st.Repo || s.Rel != st.Rel {
-			others[s.Name] = true
+			others[s.Name] = s.Repo + ":" + s.Rel
 		}
 	}
 	derived := source.ServiceName(source.SpecFile{Repo: st.Repo, Rel: st.Rel})
 	if w.exists && st.Status == syncer.SpecOK {
-		w.say("  Note: the name is the service's identity. Renaming it renames its folder and variables")
-		w.say("  (%s...), and requests with tests or scripts move to _removed/ on the next sync.", gen.VarPrefix(st.Name))
+		w.ui.Warn("Renaming renames the folder and the %s* variables. Requests with tests or scripts move to _removed/ on the next sync.", gen.VarPrefix(st.Name))
 	}
-	name, err := w.p.AskValid("  Service name", st.Name, func(s string) error {
+	name, err := w.ui.AskValid("Service name", st.Name, func(s string) (string, error) {
 		if !config.ValidServiceName(s) {
-			return errors.New("use letters, digits, _ and -, starting with a letter or digit")
+			return "", errors.New("use letters, digits, _ and -, starting with a letter or digit")
 		}
-		if others[s] {
-			return fmt.Errorf("%s is used by another spec", s)
+		if other, ok := others[s]; ok {
+			return "", fmt.Errorf("%s is used by %s", s, other)
 		}
-		return nil
+		return "variables will be " + gen.VarPrefix(s) + "host, " + gen.VarPrefix(s) + "port, ...", nil
 	})
 	if err != nil {
 		return err
@@ -545,19 +662,20 @@ func (w *wizard) setOverride(st syncer.SpecStatus, edit func(*config.Override)) 
 
 func (w *wizard) editEnvironments() error {
 	for {
-		w.say("Environments. Each becomes a Bruno environment that overrides the hosts and ports from the specs.")
+		w.ui.Section("Environments")
+		w.ui.Info("Each becomes a Bruno environment that overrides the hosts and ports from the specs.")
 		if len(w.cfg.Environments) == 0 {
-			w.say("  none yet (requests then use the server URL of each spec)")
+			w.ui.Info("None yet. Without one, requests use the server URL of each spec.")
 		}
-		for i, e := range w.cfg.Environments {
-			w.say("  %d. %s", i+1, describeEnv(e))
+		for _, e := range w.cfg.Environments {
+			w.ui.OK("%s", describeEnv(e))
 		}
 		opts := []string{"Add an environment"}
 		if len(w.cfg.Environments) > 0 {
 			opts = append(opts, "Change an environment", "Remove an environment")
 		}
 		opts = append(opts, "Done")
-		i, err := w.p.Choose("", opts, len(opts)-1)
+		i, err := w.ui.Choose("Environments", opts, len(opts)-1)
 		if err != nil {
 			return err
 		}
@@ -575,7 +693,7 @@ func (w *wizard) editEnvironments() error {
 			for _, e := range w.cfg.Environments {
 				names = append(names, e.Name)
 			}
-			k, err := w.p.Choose("  Which one?", append(names, "Cancel"), len(names))
+			k, err := w.ui.Choose("Which environment?", append(names, "Cancel"), len(names))
 			if err != nil {
 				return err
 			}
@@ -597,32 +715,34 @@ func (w *wizard) editEnvironments() error {
 
 // editEnv edits e in place. index is its position, or -1 for a new one.
 func (w *wizard) editEnv(e *config.Environment, index int) error {
-	name, err := w.p.AskValid("  Name (for example local, staging, prod)", e.Name, func(s string) error {
+	name, err := w.ui.AskValid("Environment name (local, staging, prod, ...)", e.Name, func(s string) (string, error) {
 		if !config.ValidEnvName(s) {
-			return errors.New("use letters, digits, space, _, . and -")
+			return "", errors.New("use letters, digits, space, _, . and -")
 		}
 		for i, o := range w.cfg.Environments {
 			if i != index && strings.EqualFold(o.Name, s) {
-				return fmt.Errorf("%s exists already", o.Name)
+				return "", fmt.Errorf("%s exists already", o.Name)
 			}
 		}
-		return nil
+		return "file environments/" + s + ".yml", nil
 	})
 	if err != nil {
 		return err
 	}
 	e.Name = name
 
-	res := w.load()
+	res, err := w.load()
+	if err != nil {
+		return err
+	}
 	services := res.Services
 	if len(services) > 0 {
-		w.say("  Values from the specs:")
+		w.ui.Info("Values in the specs:")
 		for _, l := range services {
-			w.say("    %-24s %s", l.Service.Name, serverSummary(l))
+			w.ui.Item("%-24s %s", l.Service.Name, serverSummary(l))
 		}
 	}
-	w.say("  Values for every service. Enter keeps the value in [brackets], '-' clears it.")
-	w.say("  {service} is replaced by the service name, e.g. {service}.staging.example.com")
+	w.ui.Info("Values for every service. Empty keeps the grey value, '-' clears it. {service} is the service name.")
 	// Only ask for what the services have: a spec URL without a port has no
 	// port variable, so a port default would do nothing for it.
 	keys := []string{"protocol", "host", "port"}
@@ -646,11 +766,11 @@ func (w *wizard) editEnv(e *config.Environment, index int) error {
 			}
 		}
 		if len(noPort) > 0 {
-			w.say("  No port in the spec URL of: %s. For those, write the port into the host (host.example.com:8443).", strings.Join(noPort, ", "))
+			w.ui.Info("No port in the spec URL of %s. For those, write the port into the host: host.example.com:8443", strings.Join(noPort, ", "))
 		}
 	}
 	for _, k := range keys {
-		v, err := w.askValue("    "+k, e.Defaults[k])
+		v, err := w.askValue(k+" for all services", e.Defaults[k], checkVar(k))
 		if err != nil {
 			return err
 		}
@@ -658,16 +778,20 @@ func (w *wizard) editEnv(e *config.Environment, index int) error {
 	}
 
 	if len(services) > 0 {
-		single, err := w.p.Confirm("  Set values for single services (a different host, port or base URL)?", len(e.Services) > 0)
+		single, err := w.ui.Confirm("Set values for single services (another host, port or base URL)?", len(e.Services) > 0)
 		if err != nil {
 			return err
 		}
 		for single {
 			var names []string
 			for _, l := range services {
-				names = append(names, l.Service.Name)
+				label := l.Service.Name
+				if n := len(e.Services[l.Service.Name]); n > 0 {
+					label += fmt.Sprintf("  (%d value(s) set)", n)
+				}
+				names = append(names, label)
 			}
-			k, err := w.p.Choose("  Which service?", append(names, "Done"), len(names))
+			k, err := w.ui.Choose("Which service?", append(names, "Done"), len(names))
 			if err != nil {
 				return err
 			}
@@ -682,7 +806,7 @@ func (w *wizard) editEnv(e *config.Environment, index int) error {
 				varNames = append(varNames, v.Name)
 			}
 			for _, n := range append(varNames, "baseUrl") {
-				val, err := w.askValue("    "+n, own[n])
+				val, err := w.askValue(svc.Name+" "+n, own[n], checkVar(n))
 				if err != nil {
 					return err
 				}
@@ -703,23 +827,30 @@ func (w *wizard) editEnv(e *config.Environment, index int) error {
 	}
 
 	if len(e.Variables) > 0 {
-		w.say("  Extra variables: %s", strings.Join(sortedPairs(e.Variables), ", "))
+		w.ui.Info("Extra variables: %s", strings.Join(sortedPairs(e.Variables), ", "))
 	}
 	for {
-		s, err := w.p.Ask("  Extra variable as name=value (Enter to finish, name= removes one)", "")
+		s, err := w.ui.AskValid("Extra variable as name=value (empty to finish, name= removes one)", "", func(s string) (string, error) {
+			if s == "" {
+				return "", nil
+			}
+			k, v, ok := strings.Cut(s, "=")
+			if !ok || strings.TrimSpace(k) == "" {
+				return "", errors.New("write it as name=value")
+			}
+			if strings.TrimSpace(v) == "" {
+				return "removes " + strings.TrimSpace(k), nil
+			}
+			return "", nil
+		})
 		if err != nil {
 			return err
 		}
 		if s == "" {
 			break
 		}
-		k, v, ok := strings.Cut(s, "=")
-		k = strings.TrimSpace(k)
-		if !ok || k == "" {
-			w.say("  write it as name=value")
-			continue
-		}
-		e.Variables = setOrDelete(e.Variables, k, strings.TrimSpace(v))
+		k, v, _ := strings.Cut(s, "=")
+		e.Variables = setOrDelete(e.Variables, strings.TrimSpace(k), strings.TrimSpace(v))
 	}
 
 	// Show what the environment file will contain.
@@ -729,21 +860,51 @@ func (w *wizard) editEnv(e *config.Environment, index int) error {
 	}
 	vars, warnings := syncer.EnvVariables(*e, outputs, res.FailedServices)
 	if len(vars) == 0 {
-		w.say("  %s sets nothing, requests use the spec values.", e.Name)
+		w.ui.OK("%s sets nothing, requests use the spec values", e.Name)
 	} else {
-		w.say("  %s will set:", e.Name)
+		w.ui.OK("%s sets %d variable(s):", e.Name, len(vars))
 		for _, v := range vars {
-			w.say("    %s = %s", v.Name, v.Value)
+			w.ui.Item("%s = %s", v.Name, v.Value)
 		}
 	}
 	for _, x := range warnings {
-		w.say("  warning: %s", x)
+		w.ui.Warn("%s", strings.TrimPrefix(x, "environment "+e.Name+": "))
 	}
 	return nil
 }
 
-func (w *wizard) askValue(label, cur string) (string, error) {
-	v, err := w.p.Ask(label, cur)
+// checkVar gives immediate feedback on the usual mistakes in base URL parts.
+func checkVar(name string) prompt.Check {
+	return func(s string) (string, error) {
+		if s == "" || s == "-" || strings.Contains(s, "{{") {
+			return "", nil
+		}
+		switch name {
+		case "protocol":
+			if strings.ContainsAny(s, ":/") {
+				return "", errors.New("just the scheme, e.g. https")
+			}
+		case "port":
+			for _, r := range s {
+				if r < '0' || r > '9' {
+					return "", errors.New("a port is a number, e.g. 8443")
+				}
+			}
+		case "host":
+			if strings.Contains(s, "://") || strings.Contains(s, "/") {
+				return "", errors.New("just the host name, without protocol or path (use baseUrl for paths)")
+			}
+		case "baseUrl":
+			if !strings.Contains(s, "://") {
+				return "", errors.New("a full URL, e.g. https://gateway.example.com/orders")
+			}
+		}
+		return "", nil
+	}
+}
+
+func (w *wizard) askValue(label, cur string, check prompt.Check) (string, error) {
+	v, err := w.ui.AskValid(label, cur, check)
 	if v == "-" {
 		v = ""
 	}
@@ -753,11 +914,11 @@ func (w *wizard) askValue(label, cur string) (string, error) {
 // ---- output
 
 func (w *wizard) editOutput() error {
-	w.say("Output")
+	w.ui.Section("Output")
 	cur := map[string]int{"": 0, config.OutputDir: 0, config.OutputZip: 1, config.OutputGit: 2}[w.cfg.Output.Type]
-	i, err := w.p.Choose("  Where should the collection go?", []string{
+	i, err := w.ui.Choose("Where should the collection go?", []string{
 		"A folder (" + or(w.cfg.Collection.Path, "./collection") + "), for local use",
-		"A zip file, for example a CI artifact people download and open in Bruno",
+		"A zip file, e.g. a CI artifact people download and open in Bruno",
 		"A git repository: sync inside a clone, commit and push",
 	}, cur)
 	if err != nil {
@@ -768,7 +929,12 @@ func (w *wizard) editOutput() error {
 	case 1:
 		out.Type = config.OutputZip
 		def := config.DefaultZipPath(or(w.cfg.Collection.Name, "APIs"))
-		p, err := w.p.Ask("  Zip file", or(w.cfg.Output.Zip.Path, def))
+		p, err := w.ui.AskValid("Zip file", or(w.cfg.Output.Zip.Path, def), func(s string) (string, error) {
+			if !strings.HasSuffix(strings.ToLower(s), ".zip") {
+				return "", errors.New("the file name should end in .zip")
+			}
+			return "", nil
+		})
 		if err != nil {
 			return err
 		}
@@ -778,24 +944,52 @@ func (w *wizard) editOutput() error {
 	case 2:
 		out.Type = config.OutputGit
 		g := w.cfg.Output.Git
-		if g.URL, err = w.p.AskValid("  Repository URL", g.URL, required); err != nil {
-			return err
-		}
-		if g.Branch, err = w.p.Ask("  Branch (Enter for the default branch)", g.Branch); err != nil {
-			return err
-		}
-		if g.Path, err = w.p.AskValid("  Collection folder inside the repository", or(g.Path, "."), func(s string) error {
-			if filepath.IsAbs(s) || strings.HasPrefix(s, "/") || strings.Contains(s, "..") {
-				return errors.New("use a relative path inside the repository")
+		if g.URL, err = w.ui.AskValid("Collection repository URL", g.URL, func(s string) (string, error) {
+			if s == "" {
+				return "", errors.New("a URL is required")
 			}
-			return nil
+			if w.offline {
+				return "offline, not checked", nil
+			}
+			branch, err := source.Probe(s)
+			if err != nil {
+				return "", fmt.Errorf("cannot reach it: %v", err)
+			}
+			if branch == "" {
+				return "reachable, empty repository (the first sync creates the branch)", nil
+			}
+			return "reachable, default branch " + branch, nil
+		}); err != nil {
+			return err
+		}
+		url := g.URL
+		if g.Branch, err = w.ui.AskValid("Branch (empty for the default branch)", g.Branch, func(s string) (string, error) {
+			if s == "" || w.offline {
+				return "", nil
+			}
+			ok, err := source.HasRef(url, s)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "does not exist yet, the first sync creates it", nil
+			}
+			return "found", nil
+		}); err != nil {
+			return err
+		}
+		if g.Path, err = w.ui.AskValid("Collection folder inside the repository", or(g.Path, "."), func(s string) (string, error) {
+			if filepath.IsAbs(s) || strings.HasPrefix(s, "/") || strings.Contains(s, "..") {
+				return "", errors.New("use a relative path inside the repository")
+			}
+			return "", nil
 		}); err != nil {
 			return err
 		}
 		if g.Path == "." {
 			g.Path = ""
 		}
-		push, err := w.p.Confirm("  Push after committing?", g.ShouldPush())
+		push, err := w.ui.Confirm("Push after committing?", g.ShouldPush())
 		if err != nil {
 			return err
 		}
@@ -813,13 +1007,13 @@ func (w *wizard) editOutput() error {
 
 func (w *wizard) summary() {
 	c := w.cfg
-	w.say("Summary of %s", filepath.Base(w.path))
-	w.say("  Collection    %s in %s", or(c.Collection.Name, "APIs"), or(c.Collection.Path, "./collection"))
+	w.ui.Section("Summary of " + filepath.Base(w.path))
+	w.ui.Item("Collection    %s in %s", or(c.Collection.Name, "APIs"), or(c.Collection.Path, "./collection"))
 	var repos []string
 	for _, r := range c.Repos {
 		repos = append(repos, config.RepoName(r))
 	}
-	w.say("  Repositories  %s", orNone(strings.Join(repos, ", ")))
+	w.ui.Item("Repositories  %s", orNone(strings.Join(repos, ", ")))
 	if w.res != nil {
 		ok, problems := 0, 0
 		for _, s := range w.res.Specs {
@@ -834,26 +1028,26 @@ func (w *wizard) summary() {
 		if problems > 0 {
 			line += fmt.Sprintf(", %d with problems (see Services)", problems)
 		}
-		w.say("  Services      %s", line)
+		w.ui.Item("Services      %s", line)
 	}
 	var envs []string
 	for _, e := range c.Environments {
 		envs = append(envs, e.Name)
 	}
-	w.say("  Environments  %s", orNone(strings.Join(envs, ", ")))
+	w.ui.Item("Environments  %s", orNone(strings.Join(envs, ", ")))
 	switch c.Output.Type {
 	case config.OutputZip:
-		w.say("  Output        zip file %s", or(c.Output.Zip.Path, config.DefaultZipPath(or(c.Collection.Name, "APIs"))))
+		w.ui.Item("Output        zip file %s", or(c.Output.Zip.Path, config.DefaultZipPath(or(c.Collection.Name, "APIs"))))
 	case config.OutputGit:
-		w.say("  Output        git %s (%s)", c.Output.Git.URL, or(c.Output.Git.Branch, "default branch"))
+		w.ui.Item("Output        git %s (%s)", c.Output.Git.URL, or(c.Output.Git.Branch, "default branch"))
 	default:
-		w.say("  Output        folder %s", or(c.Collection.Path, "./collection"))
+		w.ui.Item("Output        folder %s", or(c.Collection.Path, "./collection"))
 	}
 }
 
 func (w *wizard) save() (bool, error) {
 	if _, err := config.Prepared(w.cfg); err != nil {
-		w.say("Cannot save yet:\n  %v", err)
+		w.ui.Fail("Cannot save yet: %v", err)
 		return false, nil
 	}
 	data, err := config.Marshal(w.cfg)
@@ -866,7 +1060,7 @@ func (w *wizard) save() (bool, error) {
 			return false, err
 		}
 		if string(old) == string(data) {
-			w.say("No changes, %s left as it is.", w.path)
+			w.ui.OK("No changes, %s left as it is", w.path)
 			return true, nil
 		}
 		if err := os.WriteFile(w.path+".bak", old, 0o644); err != nil {
@@ -879,18 +1073,18 @@ func (w *wizard) save() (bool, error) {
 	if err := os.WriteFile(w.path, data, 0o644); err != nil {
 		return false, err
 	}
-	w.say("Saved %s.", w.path)
+	w.ui.OK("Saved %s", w.path)
 	w.exists = true
 	return true, nil
 }
 
 // ---- helpers
 
-func required(s string) error {
+func required(s string) (string, error) {
 	if strings.TrimSpace(s) == "" {
-		return errors.New("a value is required")
+		return "", errors.New("a value is required")
 	}
-	return nil
+	return "", nil
 }
 
 func or(s, def string) string {
@@ -925,9 +1119,14 @@ func brief(s string) string {
 	return s
 }
 
-func firstLine(s string) string {
-	s, _, _ = strings.Cut(s, "\n")
-	return s
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func setOrDelete(m map[string]string, k, v string) map[string]string {
