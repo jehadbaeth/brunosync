@@ -410,6 +410,14 @@ repos:
   # - git: git@gitlab.example.com:platform/flight-dynamics.git
   #   ref: main
 
+# Bruno environments, written to <collection>/environments/<name>.yml. They
+# override the <service>_protocol/_host/_port variables taken from the specs.
+# environments:
+#   - name: staging
+#     defaults: { protocol: https, host: "{service}.staging.example.com" }
+#     services:
+#       orders: { port: "8443" }
+
 # Where the result goes. Default is the folder above (collection.path).
 # output:
 #   type: zip                    # dir | zip | git
