@@ -50,7 +50,7 @@ func TestNewConfig(t *testing.T) {
 		"1", "staging", "https", "{service}.stg.example.com", "", // add staging with defaults
 		"y", "2", "", "", "8443", "", "", // orders-service: port 8443, then done
 		"tenant=okapi", "", // one extra variable
-		"", // environments done
+		"",      // environments done
 		"2", "", // zip output, default path
 		"", "n", // save, no sync
 	))
