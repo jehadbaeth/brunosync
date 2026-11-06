@@ -349,7 +349,7 @@ func (m selectModel) View() string {
 		o := m.options[i]
 		num := strconv.Itoa(i+1) + ". "
 		if i == m.cursor {
-			b.WriteString("  " + st.sel.Render("❯ "+num+o) + "\n")
+			b.WriteString("  " + styled(st.sel, "❯ "+num+o) + "\n")
 		} else {
 			b.WriteString("    " + st.dim.Render(num) + o + "\n")
 		}

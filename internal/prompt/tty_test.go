@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func key(s string) tea.KeyMsg {
@@ -143,5 +144,18 @@ func TestShimmerMoves(t *testing.T) {
 	// With colors off the text itself must stay readable.
 	if got := shimmer(testPrinter().st, "Loading", 3); got != "Loading" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// A badge inside a highlighted menu row must not end the highlight.
+func TestStyledKeepsTheRowColorAfterABadge(t *testing.T) {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.TrueColor)
+	st := newStyles(r)
+	got := styled(st.sel, "name "+st.warn.Render("skipped")+" path")
+	sel := st.sel.Render("x")
+	selStart := sel[:strings.Index(sel, "x")]
+	if !strings.Contains(got, selStart+" path") {
+		t.Errorf("path lost the row color: %q", got)
 	}
 }

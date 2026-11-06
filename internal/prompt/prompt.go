@@ -156,6 +156,18 @@ func (p printer) Field(key, value string) {
 	p.line("  " + p.st.dim.Render(fmt.Sprintf("%-14s", key)) + value)
 }
 
+// styled applies st to s without losing it after a badge inside s: every
+// reset a badge ends with would otherwise end st too.
+func styled(st lipgloss.Style, s string) string {
+	parts := strings.Split(s, "\x1b[0m")
+	for i, part := range parts {
+		if part != "" {
+			parts[i] = st.Render(part)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
 func (p printer) Badge(kind Kind, text string) string {
 	switch kind {
 	case KindOK:
@@ -172,7 +184,7 @@ func (p printer) Badge(kind Kind, text string) string {
 func (p printer) done(label, answer, msg string) string {
 	s := "  " + p.st.ok.Render("✓") + " " + label
 	if answer != "" {
-		s += "  " + p.st.dim.Render(answer)
+		s += "  " + styled(p.st.dim, answer)
 	}
 	if msg != "" {
 		s += "\n    " + p.st.dim.Render("⎿") + " " + p.st.ok.Render(msg)
