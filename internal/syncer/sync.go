@@ -41,6 +41,28 @@ type LoadResult struct {
 	FailedRepos    map[string]bool
 	Skipped        []string
 	Errors         []string
+	// Specs lists every discovered spec in discovery order, for tools that
+	// show the whole picture (the wizard), including skipped and failed ones.
+	Specs []SpecStatus
+}
+
+// Spec statuses.
+const (
+	SpecOK        = "ok"
+	SpecSkipped   = "skipped"   // overrides.<spec>.skip
+	SpecLibrary   = "library"   // no operations, a shared module
+	SpecFailed    = "failed"    // could not be loaded
+	SpecDuplicate = "duplicate" // its service name is taken by another spec
+)
+
+// SpecStatus is the outcome for one discovered spec file.
+type SpecStatus struct {
+	Repo    string
+	Rel     string // path relative to the repo root, the overrides key
+	Name    string // service name, derived or from the override
+	Status  string
+	Detail  string
+	Service *spec.Service // set when the spec loaded
 }
 
 // LoadAll resolves every repo and loads every spec. A failing repo or spec is
@@ -69,11 +91,14 @@ func LoadAll(cfg *config.Config, opt source.Options) *LoadResult {
 		}
 		for _, sf := range files {
 			src := r.Name + ":" + sf.Rel
+			name := source.ServiceName(sf)
+			st := SpecStatus{Repo: r.Name, Rel: sf.Rel, Name: name}
 			if sf.Override.Skip {
 				res.Skipped = append(res.Skipped, src+" (skip in config)")
+				st.Status = SpecSkipped
+				res.Specs = append(res.Specs, st)
 				continue
 			}
-			name := source.ServiceName(sf)
 			svc, err := spec.Load(sf.Abs, spec.LoadOptions{
 				Name:                name,
 				Folder:              sf.Override.Folder,
@@ -82,25 +107,39 @@ func LoadAll(cfg *config.Config, opt source.Options) *LoadResult {
 			})
 			if errors.Is(err, spec.ErrNoOperations) {
 				res.Skipped = append(res.Skipped, src+" (no operations, treated as a shared module)")
+				st.Status = SpecLibrary
+				res.Specs = append(res.Specs, st)
 				continue
 			}
 			if err != nil {
 				res.Errors = append(res.Errors, err.Error())
 				res.FailedServices[name] = true
+				st.Status, st.Detail = SpecFailed, err.Error()
+				res.Specs = append(res.Specs, st)
 				continue
 			}
+			st.Service = svc
 			if prev, dup := bySource[name]; dup {
 				res.Errors = append(res.Errors, fmt.Sprintf(
 					"service name %q is derived for both %s and %s, set overrides.<spec>.name for one of them", name, prev, src))
 				res.FailedServices[name] = true
+				st.Status, st.Detail = SpecDuplicate, "same name as "+prev
+				res.Specs = append(res.Specs, st)
 				continue
 			}
+			st.Status = SpecOK
+			res.Specs = append(res.Specs, st)
 			bySource[name] = src
 			index[name] = len(res.Services)
 			res.Services = append(res.Services, Loaded{Service: svc, Repo: r.Name})
 		}
 	}
 	// Drop services whose name turned out to be ambiguous.
+	for i := range res.Specs {
+		if st := &res.Specs[i]; st.Status == SpecOK && res.FailedServices[st.Name] {
+			st.Status, st.Detail = SpecDuplicate, "another spec derives the same name"
+		}
+	}
 	kept := res.Services[:0]
 	for _, l := range res.Services {
 		if !res.FailedServices[l.Service.Name] {

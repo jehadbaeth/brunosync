@@ -421,3 +421,26 @@ paths:
 		t.Fatalf("second sync changed files: %+v", rep.Changes)
 	}
 }
+
+func TestLoadAllSpecStatus(t *testing.T) {
+	cfg, _ := fixture(t)
+	cfg.Repos[0].Overrides = map[string]config.Override{"billing/openapi.yml": {Name: "orders-service"}}
+	res := LoadAll(cfg, source.Options{})
+	got := map[string]string{}
+	for _, s := range res.Specs {
+		got[s.Rel] = s.Name + "/" + s.Status
+	}
+	want := map[string]string{
+		"common/openapi.yml":                            "common/library",
+		"billing/openapi.yml":                           "orders-service/duplicate",
+		"orders-service/src/main/resources/openapi.yml": "orders-service/duplicate",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: got %q, want %q", k, got[k], v)
+		}
+	}
+	if len(res.Services) != 0 {
+		t.Errorf("ambiguous services must not load: %d", len(res.Services))
+	}
+}
