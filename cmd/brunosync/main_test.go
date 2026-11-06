@@ -33,7 +33,7 @@ func writeConfig(t *testing.T, dir, extra string) string {
 func runCLI(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	code := run(args, &out, &errb)
+	code := run(args, strings.NewReader(""), &out, &errb)
 	return code, out.String() + errb.String()
 }
 
@@ -236,5 +236,44 @@ func TestDebugCompareDetectsTypeAndValueChanges(t *testing.T) {
 	write(a, "http:\n  params:\n    - name: n\n      value: \"0_0001\"\n")
 	if code, out := runCLI(t, "debug", "compare", a, b); code != 0 {
 		t.Fatalf("Bruno's unquoted 0_0001 must equal the quoted string: %s", out)
+	}
+}
+
+// In CI or with piped input the wizard must never wait for answers.
+func TestWizardNeedsATerminal(t *testing.T) {
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "brunosync.yml")
+	var out, errb bytes.Buffer
+	if code := run([]string{"configure", "-c", cfg}, devnull, &out, &errb); code != exitError || !strings.Contains(errb.String(), "needs a terminal") {
+		t.Fatalf("configure without a terminal: exit %d: %s", code, errb.String())
+	}
+	// init without a terminal keeps writing the commented starter
+	if code := run([]string{"init", "-c", cfg}, devnull, &out, &errb); code != exitOK {
+		t.Fatalf("init: exit %d: %s", code, errb.String())
+	}
+	if b, _ := os.ReadFile(cfg); string(b) == "" || !strings.Contains(string(b), "# brunosync configuration") {
+		t.Errorf("starter not written: %q", b)
+	}
+	if code := run([]string{"init", "-c", cfg}, devnull, &out, &errb); code != exitError || !strings.Contains(errb.String(), "brunosync configure") {
+		t.Errorf("init on an existing file should point at configure: %s", errb.String())
+	}
+}
+
+// The wizard through the CLI, ending with a sync of the new config.
+func TestInitWizardThenSync(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "brunosync.yml")
+	answers := strings.Join([]string{"CLI APIs", "", fixtureRepo(t), "", "", "", "", "", "y"}, "\n") + "\n"
+	var out, errb bytes.Buffer
+	if code := run([]string{"init", "-c", cfg}, strings.NewReader(answers), &out, &errb); code != exitOK {
+		t.Fatalf("exit %d:\n%s\n%s", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "collection", "orders-service", "orders", "createOrder.yml")); err != nil {
+		t.Fatalf("sync after the wizard did not run:\n%s", out.String())
 	}
 }

@@ -14,8 +14,11 @@ import (
 	"github.com/jehadbaeth/brunosync/internal/config"
 	"github.com/jehadbaeth/brunosync/internal/gen"
 	"github.com/jehadbaeth/brunosync/internal/output"
+	"github.com/jehadbaeth/brunosync/internal/prompt"
 	"github.com/jehadbaeth/brunosync/internal/source"
 	"github.com/jehadbaeth/brunosync/internal/syncer"
+	"github.com/jehadbaeth/brunosync/internal/wizard"
+	"golang.org/x/term"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -27,7 +30,8 @@ Usage:
   brunosync <command> [flags]
 
 Commands:
-  init       write a starter brunosync.yml in the current directory
+  init       create brunosync.yml with the setup wizard (--starter: a commented template)
+  configure  change an existing brunosync.yml with the wizard
   validate   load every configured spec and report problems, writes nothing
   sync       generate and merge requests into the collection
   version    print the version
@@ -45,10 +49,10 @@ const (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return exitUsage
@@ -59,7 +63,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "validate", "check":
 		return cmdValidate(args[1:], stdout, stderr)
 	case "init":
-		return cmdInit(args[1:], stdout, stderr)
+		return cmdInit(args[1:], stdin, stdout, stderr)
+	case "configure", "wizard":
+		return cmdConfigure(args[1:], stdin, stdout, stderr)
 	case "debug":
 		return cmdDebug(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
@@ -265,19 +271,23 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func cmdInit(args []string, stdout, stderr io.Writer) int {
+func cmdInit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := configFlag(fs)
+	starter := fs.Bool("starter", false, "write a commented template instead of starting the wizard")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if _, err := os.Stat(*cfgPath); err == nil {
-		fmt.Fprintf(stderr, "error: %s already exists\n", *cfgPath)
+		fmt.Fprintf(stderr, "error: %s already exists, change it with `brunosync configure`\n", *cfgPath)
 		return exitError
 	} else if !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintln(stderr, "error:", err)
 		return exitError
+	}
+	if !*starter && isTerminal(stdin) {
+		return runWizard(*cfgPath, false, stdin, stdout, stderr)
 	}
 	if err := os.WriteFile(*cfgPath, []byte(config.Starter), 0o644); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -285,4 +295,57 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Wrote %s. Edit the repos section, then run `brunosync validate`.\n", *cfgPath)
 	return exitOK
+}
+
+func cmdConfigure(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := configFlag(fs)
+	offline := fs.Bool("offline", false, "do not fetch git repos, use the cached clones")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if !isTerminal(stdin) {
+		fmt.Fprintf(stderr, "error: the wizard needs a terminal. Edit %s directly instead (reference: brunosync.config.example.yml)\n", *cfgPath)
+		return exitError
+	}
+	return runWizard(*cfgPath, *offline, stdin, stdout, stderr)
+}
+
+func runWizard(path string, offline bool, stdin io.Reader, stdout, stderr io.Writer) int {
+	res, err := wizard.Run(wizard.Options{In: stdin, Out: stdout, Path: path, Offline: offline})
+	if errors.Is(err, prompt.ErrAborted) {
+		return exitError
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return exitError
+	}
+	if !res.Saved {
+		return exitOK
+	}
+	if !res.RunSync {
+		fmt.Fprintf(stdout, "Next: brunosync validate, then brunosync sync%s\n", configArg(path))
+		return exitOK
+	}
+	fmt.Fprintln(stdout)
+	return cmdSync([]string{"-c", path}, stdout, stderr)
+}
+
+func configArg(path string) string {
+	if path == config.DefaultFile {
+		return ""
+	}
+	return " -c " + path
+}
+
+// isTerminal reports whether the wizard can talk to a person. Readers that
+// are not files (tests) count as interactive; pipes and /dev/null do not, so
+// CI never waits for an answer.
+var isTerminal = func(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	if !ok {
+		return true
+	}
+	return term.IsTerminal(int(f.Fd()))
 }
