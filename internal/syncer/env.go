@@ -78,7 +78,11 @@ func EnvVariables(env config.Environment, outputs []gen.Output, failed map[strin
 	if len(outputs) > 0 {
 		for _, k := range sortedKeys(env.Defaults) {
 			if !usedDefaults[k] && !overriddenEverywhere(k, env, outputs) {
-				warnings = append(warnings, fmt.Sprintf("environment %s: defaults.%s matches no service variable", env.Name, k))
+				hint := ""
+				if k == "port" {
+					hint = " (no spec URL has a port, write it into host instead: example.com:8443)"
+				}
+				warnings = append(warnings, fmt.Sprintf("environment %s: defaults.%s matches no service variable%s", env.Name, k, hint))
 			}
 		}
 	}

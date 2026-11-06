@@ -623,7 +623,33 @@ func (w *wizard) editEnv(e *config.Environment, index int) error {
 	}
 	w.say("  Values for every service. Enter keeps the value in [brackets], '-' clears it.")
 	w.say("  {service} is replaced by the service name, e.g. {service}.staging.example.com")
-	for _, k := range []string{"protocol", "host", "port"} {
+	// Only ask for what the services have: a spec URL without a port has no
+	// port variable, so a port default would do nothing for it.
+	keys := []string{"protocol", "host", "port"}
+	if len(services) > 0 {
+		has := map[string]bool{}
+		var noPort []string
+		for _, l := range services {
+			hasPort := false
+			for _, v := range l.Service.Server.Vars {
+				has[v.Name] = true
+				hasPort = hasPort || v.Name == "port"
+			}
+			if !hasPort {
+				noPort = append(noPort, l.Service.Name)
+			}
+		}
+		keys = keys[:0]
+		for _, k := range []string{"protocol", "host", "port"} {
+			if has[k] || e.Defaults[k] != "" {
+				keys = append(keys, k)
+			}
+		}
+		if len(noPort) > 0 {
+			w.say("  No port in the spec URL of: %s. For those, write the port into the host (host.example.com:8443).", strings.Join(noPort, ", "))
+		}
+	}
+	for _, k := range keys {
 		v, err := w.askValue("    "+k, e.Defaults[k])
 		if err != nil {
 			return err
