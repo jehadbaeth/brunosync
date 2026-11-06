@@ -18,15 +18,22 @@ import (
 // DefaultFile is the config file name looked up when none is given.
 const DefaultFile = "brunosync.yml"
 
-// Default spec globs and excludes, used when a repo does not set its own.
+// Default spec globs, used when a repo does not set its own.
 var (
-	DefaultSpecs   = []string{"**/openapi.yml", "**/openapi.yaml"}
-	DefaultExclude = []string{"**/node_modules/**", "**/build/**", "**/target/**", "**/dist/**", "**/.git/**"}
+	DefaultSpecs = []string{"**/openapi.yml", "**/openapi.yaml"}
+	// DefaultExclude is always ignored, in every repo: dependencies, build
+	// and IDE output (they hold copies of the specs) and service templates.
+	// Entries are folders, see ExcludePattern. Templates are named exactly,
+	// so a real service such as template-engine is not hidden.
+	DefaultExclude = []string{
+		"node_modules", ".git",
+		"build", "target", "dist", "bin", "out", ".gradle", ".idea",
+		"template", "templates", "template-service", "*-template",
+	}
 
-	// StarterExclude is what a new config ignores in every repository on
-	// top of DefaultExclude: IDE and compiler output that holds copies of
-	// the specs, test resources, and service templates.
-	StarterExclude = []string{"bin", "out", ".gradle", ".idea", "src/test", "template*", "*-template"}
+	// StarterExclude is what a new config ignores on top of DefaultExclude.
+	// It is written into the file, so it is visible and can be removed.
+	StarterExclude = []string{"src/test"}
 )
 
 // CheckExclude returns what is wrong with an exclude entry, or "".
@@ -455,9 +462,10 @@ repos:
   # - git: ../orders-service
   #   ref: release
 
-# Folders never searched for specs, in every repo. A name matches that folder
-# at any depth. build, target, dist and node_modules are always ignored.
-exclude: [bin, out, .gradle, .idea, src/test, "template*", "*-template"]
+# Folders never searched for specs, in every repo, on top of the defaults
+# (build and IDE output such as build, target, bin, out, and service templates
+# such as template-service). A name matches that folder at any depth.
+exclude: [src/test]
 
 # Bruno environments, written to <collection>/environments/<name>.yml. They
 # override the <service>_protocol/_host/_port variables taken from the specs.

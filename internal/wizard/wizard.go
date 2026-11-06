@@ -361,20 +361,20 @@ func (w *wizard) editRepos() error {
 }
 
 // alwaysIgnored names the folders brunosync ignores without being told.
-const alwaysIgnored = "build, target, dist, node_modules"
+var alwaysIgnored = strings.Join(slices.DeleteFunc(slices.Clone(config.DefaultExclude), func(e string) bool { return e == ".git" }), ", ")
 
 func ignoredSummary(exclude []string) string {
 	if len(exclude) == 0 {
 		return alwaysIgnored
 	}
-	return strings.Join(exclude, ", ") + " (and " + alwaysIgnored + ")"
+	return strings.Join(exclude, ", ") + " (and the defaults: " + alwaysIgnored + ")"
 }
 
 // editIgnored edits the folders that are never searched for specs. The
 // check shows right away which of the specs found so far a list would hide.
 func (w *wizard) editIgnored() error {
 	w.ui.Section("Ignored folders")
-	w.ui.Info("Never searched for specs, in every repository. A name matches that folder at any depth (bin, src/test, template*).")
+	w.ui.Info("Never searched for specs, in every repository. A name matches that folder at any depth (legacy, src/test, *-mock).")
 	w.ui.Info("%s are always ignored. '-' ignores nothing else.", alwaysIgnored)
 	answer, err := w.ui.AskValid("Folders to ignore, comma separated", strings.Join(w.cfg.Exclude, ", "), func(s string) (string, error) {
 		if strings.TrimSpace(s) == "-" {

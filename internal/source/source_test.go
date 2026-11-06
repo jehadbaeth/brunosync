@@ -39,6 +39,9 @@ func TestDiscover(t *testing.T) {
 		"b/src/main/resources/openapi.yaml",
 		"node_modules/x/openapi.yml",
 		"build/generated/openapi.yml",
+		"d/bin/main/openapi.yml",
+		"template-service/openapi.yml",
+		"template-engine/openapi.yml", // a real service, not a template
 		"c/other.yml",
 	} {
 		p := filepath.Join(dir, f)
@@ -58,7 +61,7 @@ func TestDiscover(t *testing.T) {
 	for _, f := range files {
 		got = append(got, f.Rel)
 	}
-	if strings.Join(got, ",") != "a/openapi.yml,b/src/main/resources/openapi.yaml" {
+	if strings.Join(got, ",") != "a/openapi.yml,b/src/main/resources/openapi.yaml,template-engine/openapi.yml" {
 		t.Errorf("discovered %v", got)
 	}
 

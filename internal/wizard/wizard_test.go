@@ -435,7 +435,7 @@ func TestIgnoredFoldersShowWhatTheyHide(t *testing.T) {
 	for _, want := range []string{
 		"is not a valid pattern",
 		"hides 1 spec(s): sample-repo:orders-service/src/main/resources/openapi.yml",
-		"Ignored       bin, orders-service (and build, target, dist, node_modules)",
+		"Ignored       bin, orders-service (and the defaults: node_modules, build, target, dist, bin, out",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output misses %q:\n%s", want, out)

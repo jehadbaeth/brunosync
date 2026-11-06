@@ -14,17 +14,13 @@ sync:
   requireOperationIds: false  # true: a missing operationId fails that spec instead of a warning
 
 # Folders never searched for specs, in every repo. Entries are folders: a name
-# or path matches that folder at any depth (bin, src/test, template*). Entries
-# containing ** are globs relative to the repo root. node_modules, build,
-# target, dist and .git are always ignored. brunosync init writes this list.
+# or path matches that folder at any depth (legacy, src/test, *-mock). Entries
+# containing ** are globs relative to the repo root.
+# Always ignored, no need to list them: node_modules, .git, build, target,
+# dist, bin, out, .gradle, .idea (build and IDE output holds copies of the
+# specs) and template, templates, template-service, *-template.
 exclude:
-  - bin                       # Eclipse and Gradle output, holds copies of the specs
-  - out                       # IntelliJ output
-  - .gradle
-  - .idea
-  - src/test                  # test resources
-  - "template*"               # service templates: template-service, templates, ...
-  - "*-template"
+  - src/test                  # test resources, brunosync init writes this one
 
 # Bruno environments, written to <collection>/environments/<name>.yml.
 # Every service gets collection variables from the first server URL of its

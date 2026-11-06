@@ -253,7 +253,7 @@ func Discover(r config.Repo, dir string) ([]SpecFile, error) {
 
 func excluded(rel string, patterns []string) bool {
 	for _, p := range patterns {
-		if ok, _ := doublestar.Match(p, rel); ok {
+		if ok, _ := doublestar.Match(config.ExcludePattern(p), rel); ok {
 			return true
 		}
 	}
